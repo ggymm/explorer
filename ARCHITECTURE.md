@@ -175,7 +175,7 @@ impl StorageProvider for NetworkDriveProvider {
 3. 实现 GPUI 的 `Render` trait
 
 ```rust
-use gpui::*;
+use gpui::{prelude::*,*};
 use explorer_common::FileItem;
 
 pub struct FileGrid {

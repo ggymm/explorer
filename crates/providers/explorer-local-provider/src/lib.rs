@@ -55,7 +55,7 @@ impl Default for LocalFileSystemProvider {
 
 #[async_trait]
 impl StorageProvider for LocalFileSystemProvider {
-    async fn get_roots(&self) -> StorageResult<Vec<StorageRoot>> {
+    async fn get_roots(&self) -> StorageResult<Vec<RootItem>> {
         smol::unblock(|| {
             let mut roots = Vec::new();
 
@@ -69,11 +69,11 @@ impl StorageProvider for LocalFileSystemProvider {
                                 if metadata.is_dir() {
                                     let name = entry.file_name().to_string_lossy().to_string();
                                     let path = entry.path().display().to_string();
-                                    roots.push(StorageRoot {
+                                    roots.push(RootItem {
                                         id: path.clone(),
                                         name: name.clone(),
-                                        root_path: path,
-                                        provider_type: StorageProviderType::LocalFileSystem,
+                                        path,
+                                        provider_type: ProviderType::LocalFileSystem,
                                         icon: None,
                                     });
                                 }
@@ -85,11 +85,11 @@ impl StorageProvider for LocalFileSystemProvider {
                 // 添加根目录
                 roots.insert(
                     0,
-                    StorageRoot {
+                    RootItem {
                         id: "/".to_string(),
                         name: "Macintosh HD".to_string(),
-                        root_path: "/".to_string(),
-                        provider_type: StorageProviderType::LocalFileSystem,
+                        path: "/".to_string(),
+                        provider_type: ProviderType::LocalFileSystem,
                         icon: None,
                     },
                 );
@@ -98,11 +98,11 @@ impl StorageProvider for LocalFileSystemProvider {
             #[cfg(target_os = "linux")]
             {
                 // Linux: 根目录和常见挂载点
-                roots.push(StorageRoot {
+                roots.push(RootItem {
                     id: "/".to_string(),
                     name: "Root".to_string(),
-                    root_path: "/".to_string(),
-                    provider_type: StorageProviderType::LocalFileSystem,
+                    path: "/".to_string(),
+                    provider_type: ProviderType::LocalFileSystem,
                     icon: None,
                 });
 
@@ -115,11 +115,11 @@ impl StorageProvider for LocalFileSystemProvider {
                                     if metadata.is_dir() {
                                         let name = entry.file_name().to_string_lossy().to_string();
                                         let path = entry.path().display().to_string();
-                                        roots.push(StorageRoot {
+                                        roots.push(RootItem {
                                             id: path.clone(),
                                             name,
-                                            root_path: path,
-                                            provider_type: StorageProviderType::LocalFileSystem,
+                                            path,
+                                            provider_type: ProviderType::LocalFileSystem,
                                             icon: None,
                                         });
                                     }
@@ -135,13 +135,13 @@ impl StorageProvider for LocalFileSystemProvider {
                 // Windows: 获取所有驱动器
                 // TODO: 使用 Windows API 获取驱动器列表
                 for letter in 'A'..='Z' {
-                    let root_path = format!("{}:\\", letter);
-                    if Path::new(&root_path).exists() {
-                        roots.push(StorageRoot {
-                            id: root_path.clone(),
+                    let path = format!("{}:\\", letter);
+                    if Path::new(&path).exists() {
+                        roots.push(RootItem {
+                            id: path.clone(),
                             name: format!("Drive {}", letter),
-                            root_path,
-                            provider_type: StorageProviderType::LocalFileSystem,
+                            path,
+                            provider_type: ProviderType::LocalFileSystem,
                             icon: None,
                         });
                     }
@@ -153,7 +153,7 @@ impl StorageProvider for LocalFileSystemProvider {
         .await
     }
 
-    async fn get_metadata(&self, path: &str) -> StorageResult<StorageEntry> {
+    async fn get_metadata(&self, path: &str) -> StorageResult<FileItem> {
         let path_str = path.to_string();
 
         smol::unblock(move || {
@@ -169,12 +169,12 @@ impl StorageProvider for LocalFileSystemProvider {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.display().to_string());
 
-            let entry_type = if metadata.is_dir() {
-                EntryType::Directory
+            let item_type = if metadata.is_dir() {
+                ItemType::Directory
             } else if metadata.is_symlink() {
-                EntryType::Symlink
+                ItemType::Symlink
             } else {
-                EntryType::File
+                ItemType::File
             };
 
             // 获取修改时间
@@ -199,19 +199,19 @@ impl StorageProvider for LocalFileSystemProvider {
             let permissions = None;
 
             // 推断 MIME 类型（仅对文件）
-            let mime_type = if entry_type == EntryType::File {
+            let mime_type = if item_type == ItemType::File {
                 Self::guess_mime_type(path)
             } else {
                 None
             };
 
-            Ok(StorageEntry {
+            Ok(FileItem {
                 name: file_name.clone(),
                 path: path.display().to_string(),
+                item_type,
+                is_hidden: Self::is_hidden(path),
                 size: metadata.len(),
                 modified,
-                entry_type,
-                is_hidden: Self::is_hidden(path),
                 metadata: EntryMetadata {
                     permissions,
                     mime_type,
@@ -224,7 +224,7 @@ impl StorageProvider for LocalFileSystemProvider {
         .await
     }
 
-    async fn list_entries(&self, path: &str) -> StorageResult<Vec<StorageEntry>> {
+    async fn list_entries(&self, path: &str) -> StorageResult<Vec<FileItem>> {
         let path_str = path.to_string();
 
         smol::unblock(move || {
@@ -252,12 +252,12 @@ impl StorageProvider for LocalFileSystemProvider {
                 let name = file_name.to_string_lossy().to_string();
                 let path_str = entry_path.display().to_string();
 
-                let entry_type = if metadata.is_dir() {
-                    EntryType::Directory
+                let item_type = if metadata.is_dir() {
+                    ItemType::Directory
                 } else if metadata.is_symlink() {
-                    EntryType::Symlink
+                    ItemType::Symlink
                 } else {
-                    EntryType::File
+                    ItemType::File
                 };
 
                 // 获取修改时间
@@ -282,19 +282,19 @@ impl StorageProvider for LocalFileSystemProvider {
                 let permissions = None;
 
                 // 推断 MIME 类型（仅对文件）
-                let mime_type = if entry_type == EntryType::File {
+                let mime_type = if item_type == ItemType::File {
                     Self::guess_mime_type(&entry_path)
                 } else {
                     None
                 };
 
-                entries.push(StorageEntry {
+                entries.push(FileItem {
                     name: name.clone(),
                     path: path_str,
+                    item_type,
+                    is_hidden: Self::is_hidden(&entry_path),
                     size: metadata.len(),
                     modified,
-                    entry_type,
-                    is_hidden: Self::is_hidden(&entry_path),
                     metadata: EntryMetadata {
                         permissions,
                         mime_type,
@@ -306,10 +306,10 @@ impl StorageProvider for LocalFileSystemProvider {
             }
 
             // 按名称排序：目录在前，文件在后
-            entries.sort_by(|a, b| match (a.entry_type, b.entry_type) {
-                (EntryType::Directory, EntryType::Directory) => a.name.cmp(&b.name),
-                (EntryType::Directory, _) => std::cmp::Ordering::Less,
-                (_, EntryType::Directory) => std::cmp::Ordering::Greater,
+            entries.sort_by(|a, b| match (a.item_type, b.item_type) {
+                (ItemType::Directory, ItemType::Directory) => a.name.cmp(&b.name),
+                (ItemType::Directory, _) => std::cmp::Ordering::Less,
+                (_, ItemType::Directory) => std::cmp::Ordering::Greater,
                 _ => a.name.cmp(&b.name),
             });
 
@@ -322,7 +322,7 @@ impl StorageProvider for LocalFileSystemProvider {
         Ok(Path::new(path).exists())
     }
 
-    fn provider_type(&self) -> StorageProviderType {
-        StorageProviderType::LocalFileSystem
+    fn provider_type(&self) -> ProviderType {
+        ProviderType::LocalFileSystem
     }
 }

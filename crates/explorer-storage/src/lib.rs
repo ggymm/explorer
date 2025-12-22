@@ -1,7 +1,6 @@
 mod error;
 mod provider;
-mod types;
 
 pub use error::*;
+pub use explorer_common::*;
 pub use provider::*;
-pub use types::*;

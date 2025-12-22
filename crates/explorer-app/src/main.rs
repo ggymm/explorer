@@ -1,55 +1,53 @@
-use std::{
-    fs::create_dir_all,
-    io::stdout,
-    mem::forget,
-    sync::Arc,
-};
+use std::{fs::create_dir_all, io::stdout, mem::forget, sync::Arc};
 
 use dirs::home_dir;
-use gpui::*;
+use gpui::{prelude::*, *};
 use tracing_appender::{
     non_blocking,
     rolling::{RollingFileAppender, Rotation},
 };
-use tracing_subscriber::{fmt::layer, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt::layer, prelude::*};
 
 use explorer_common::*;
-use explorer_component::*;
+use explorer_component::{
+    Assets, GroupedList, Icon, IconName, List, ListGroup, ListItem, Resizable, Theme,
+};
 use explorer_local_provider::LocalFileSystemProvider;
 use explorer_storage::*;
 
-// ===== 数据转换函数 =====
-// 将 storage 层的数据类型转换为 UI 组件所需的类型
+mod quick_access;
 
-/// 将 StorageRoot 转换为 RootItem
-fn storage_root_to_root_item(root: &StorageRoot) -> RootItem {
-    let provider_type = match root.provider_type {
-        StorageProviderType::LocalFileSystem => ProviderType::LocalFileSystem,
-        StorageProviderType::NetworkDrive => ProviderType::NetworkDrive,
-        StorageProviderType::CloudStorage { .. } => ProviderType::CloudStorage,
-    };
+// ===== 侧边栏数据类型 =====
 
-    RootItem {
-        id: root.id.clone(),
-        name: root.name.clone(),
-        path: root.root_path.clone(),
-        provider_type,
+/// 侧边栏项
+#[derive(Clone)]
+struct SidebarItem {
+    name: String,
+    path: String,
+    icon_name: IconName,
+}
+
+impl From<&QuickAccessItem> for SidebarItem {
+    fn from(item: &QuickAccessItem) -> Self {
+        Self {
+            name: item.name.clone(),
+            path: item.path.clone(),
+            icon_name: IconName::Folder,
+        }
     }
 }
 
-/// 将 StorageEntry 转换为 FileItem
-fn storage_entry_to_file_item(entry: &StorageEntry) -> FileItem {
-    let item_type = match entry.entry_type {
-        EntryType::File => ItemType::File,
-        EntryType::Directory => ItemType::Directory,
-        EntryType::Symlink => ItemType::Symlink,
-    };
-
-    FileItem {
-        name: entry.name.clone(),
-        path: entry.path.clone(),
-        item_type,
-        is_hidden: entry.is_hidden,
+impl From<&RootItem> for SidebarItem {
+    fn from(item: &RootItem) -> Self {
+        Self {
+            name: item.name.clone(),
+            path: item.path.clone(),
+            icon_name: match item.provider_type {
+                ProviderType::LocalFileSystem => IconName::FolderClosed,
+                ProviderType::NetworkDrive => IconName::FolderClosed,
+                ProviderType::CloudStorage { .. } => IconName::FolderClosed,
+            },
+        }
     }
 }
 
@@ -58,9 +56,10 @@ fn storage_entry_to_file_item(entry: &StorageEntry) -> FileItem {
 /// Explorer 主组件
 pub struct Explorer {
     provider: Arc<dyn StorageProvider>,
-    roots: Vec<StorageRoot>,
+    roots: Vec<RootItem>,
     current_path: String,
-    entries: Vec<StorageEntry>,
+    selected_sidebar_path: Option<String>,
+    entries: Vec<FileItem>,
     loading: bool,
     error: Option<String>,
 }
@@ -70,10 +69,16 @@ impl Explorer {
     pub fn new() -> Self {
         let provider: Arc<dyn StorageProvider> = Arc::new(LocalFileSystemProvider::new());
 
+        // 使用用户主目录作为默认路径，如果获取失败则使用根目录
+        let default_path = home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+
         Self {
             provider,
             roots: Vec::new(),
-            current_path: String::new(),
+            current_path: default_path.clone(),
+            selected_sidebar_path: Some(default_path),
             entries: Vec::new(),
             loading: true,
             error: None,
@@ -85,6 +90,7 @@ impl Explorer {
         tracing::info!("初始化 Explorer");
 
         let provider = self.provider.clone();
+        let current_path = self.current_path.clone();
         cx.spawn_in(window, async move |this, cx| {
             tracing::info!("开始异步加载数据");
 
@@ -96,26 +102,19 @@ impl Explorer {
                     let roots = provider.get_roots().await?;
                     tracing::info!("加载到 {} 个存储根节点", roots.len());
 
-                    // 默认选择第一个根节点
-                    let current_path = roots
-                        .first()
-                        .map(|r| r.root_path.clone())
-                        .unwrap_or_else(|| "/".to_string());
-
-                    // 加载初始目录
+                    // 加载初始目录（使用用户主目录）
                     let entries = provider.list_entries(&current_path).await?;
                     tracing::info!("成功加载 {} 个条目", entries.len());
 
-                    Ok::<_, anyhow::Error>((roots, current_path, entries))
+                    Ok::<_, anyhow::Error>((roots, entries))
                 })
                 .await;
 
             // 更新 UI
             let _ = cx.update(|_, cx| {
                 let _ = this.update(cx, |explorer, cx| match ret {
-                    Ok((roots, current_path, entries)) => {
+                    Ok((roots, entries)) => {
                         explorer.roots = roots;
-                        explorer.current_path = current_path;
                         explorer.entries = entries;
                         explorer.loading = false;
                         explorer.error = None;
@@ -177,31 +176,212 @@ impl Explorer {
 }
 
 impl Render for Explorer {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let layout = SidebarLayout::new();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
 
-        // 转换 storage 数据类型为 UI 组件类型
-        let root_items: Vec<RootItem> = self
-            .roots
-            .iter()
-            .map(storage_root_to_root_item)
-            .collect();
+        // 获取快捷访问项
+        let quick_access_items = quick_access::get_quick_access_items();
 
-        let file_items: Vec<FileItem> = self
-            .entries
-            .iter()
-            .map(storage_entry_to_file_item)
-            .collect();
+        // 获取 Explorer 实体的弱引用用于事件回调
+        let this_entity = cx.entity().downgrade();
+        let this_entity_file = this_entity.clone();
 
-        let sidebar = Sidebar::new().roots(root_items);
+        // 构建侧边栏
+        let sidebar = self.render_sidebar(quick_access_items, theme, &this_entity);
 
-        let file_list = FileList::new()
-            .entries(file_items)
-            .current_path(self.current_path.clone())
-            .loading(self.loading)
-            .error(self.error.clone());
+        // 构建文件列表
+        let file_list = self.render_file_list(theme, this_entity_file);
 
-        layout.render_with_children(sidebar, file_list)
+        // 使用可调整大小的布局组件
+        Resizable::new("explorer-layout", sidebar, file_list)
+            .size(px(240.))
+            .range(px(180.)..px(480.))
+    }
+}
+
+impl Explorer {
+    /// 渲染侧边栏
+    fn render_sidebar(
+        &self,
+        quick_access_items: Vec<QuickAccessItem>,
+        theme: &Theme,
+        this_entity: &WeakEntity<Self>,
+    ) -> impl IntoElement {
+        let selected_path = self.selected_sidebar_path.clone();
+
+        // 构建分组数据
+        let mut groups = Vec::new();
+
+        // 快捷访问分组
+        if !quick_access_items.is_empty() {
+            let items: Vec<SidebarItem> =
+                quick_access_items.iter().map(SidebarItem::from).collect();
+            groups.push(ListGroup::new("快捷访问", items));
+        }
+
+        // 存储位置分组
+        if !self.roots.is_empty() {
+            let items: Vec<SidebarItem> = self.roots.iter().map(SidebarItem::from).collect();
+            groups.push(ListGroup::new("存储位置", items));
+        }
+
+        let this_entity_clone = this_entity.clone();
+
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(theme.colors.background)
+            .border_r_1()
+            .border_color(theme.colors.border)
+            .child(
+                div()
+                    .id("sidebar-content")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .overflow_scroll()
+                    .p(theme.spacing.md)
+                    .child(
+                        GroupedList::new()
+                            .groups(groups)
+                            .render_item(move |item, theme| {
+                                let is_selected = selected_path
+                                    .as_ref()
+                                    .map(|p| p == &item.path)
+                                    .unwrap_or(false);
+
+                                let icon = Icon::new(item.icon_name);
+                                let item_path = item.path.clone();
+                                let this_clone = this_entity_clone.clone();
+
+                                ListItem::new(item.path.clone())
+                                    .selected(is_selected)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(theme.spacing.sm)
+                                            .child(icon.text_color(if is_selected {
+                                                theme.colors.accent_foreground
+                                            } else {
+                                                theme.colors.foreground
+                                            }))
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(if is_selected {
+                                                        theme.colors.accent_foreground
+                                                    } else {
+                                                        theme.colors.foreground
+                                                    })
+                                                    .child(item.name.clone()),
+                                            ),
+                                    )
+                                    .on_click(move |window, cx| {
+                                        tracing::info!("点击侧边栏项: {}", item_path);
+                                        if let Some(this) = this_clone.upgrade() {
+                                            let path = item_path.clone();
+                                            let _ = this.update(cx, |explorer, cx| {
+                                                explorer.selected_sidebar_path = Some(path.clone());
+                                                explorer.load_directory(path, window, cx);
+                                            });
+                                        }
+                                    })
+                                    .into_any_element()
+                            }),
+                    ),
+            )
+    }
+
+    /// 渲染文件列表
+    fn render_file_list(&self, theme: &Theme, this_entity: WeakEntity<Self>) -> impl IntoElement {
+        let entries = self.entries.clone();
+        let loading = self.loading;
+        let error = self.error.clone();
+
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(theme.colors.background)
+            .child(
+                // 路径栏
+                div()
+                    .flex()
+                    .items_center()
+                    .p(theme.spacing.md)
+                    .border_b_1()
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.colors.muted_foreground)
+                            .child(self.current_path.clone()),
+                    ),
+            )
+            .child(
+                // 文件列表内容 - 使用 List 组件
+                div()
+                    .id("file-list-content")
+                    .flex_1()
+                    .overflow_scroll()
+                    .p(theme.spacing.sm)
+                    .child(
+                        List::new()
+                            .items(entries)
+                            .loading(loading)
+                            .error(error)
+                            .empty_text("目录为空")
+                            .loading_text("加载中...")
+                            .render_item(move |entry, theme| {
+                                let icon = match entry.item_type {
+                                    ItemType::Directory => Icon::new(IconName::FolderClosed),
+                                    ItemType::File => Icon::new(IconName::File),
+                                    ItemType::Symlink => Icon::new(IconName::File),
+                                };
+
+                                let name_color = if entry.is_hidden {
+                                    theme.colors.muted_foreground
+                                } else {
+                                    theme.colors.foreground
+                                };
+
+                                let entry_path = entry.path.clone();
+                                let entry_type = entry.item_type;
+                                let this_clone = this_entity.clone();
+
+                                let mut item = ListItem::new(entry.path.clone()).child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(theme.spacing.sm)
+                                        .child(icon.text_color(theme.colors.foreground))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(name_color)
+                                                .child(entry.name.clone()),
+                                        ),
+                                );
+
+                                // 只为目录添加双击事件
+                                if entry_type == ItemType::Directory {
+                                    item = item.on_double_click(move |window, cx| {
+                                        tracing::info!("双击文件夹: {}", entry_path);
+                                        if let Some(this) = this_clone.upgrade() {
+                                            let path = entry_path.clone();
+                                            let _ = this.update(cx, |explorer, cx| {
+                                                explorer.load_directory(path, window, cx);
+                                            });
+                                        }
+                                    });
+                                }
+
+                                item.into_any_element()
+                            }),
+                    ),
+            )
     }
 }
 
@@ -240,13 +420,16 @@ fn init() {
 }
 
 fn main() {
-    let app = Application::new();
+    let app = Application::new().with_assets(Assets);
     app.run(move |cx| {
         // 初始化日志系统
         init();
 
         tracing::info!("Explorer 应用启动");
         tracing::info!("版本: {}", env!("CARGO_PKG_VERSION"));
+
+        // 初始化全局主题（使用暗色主题）
+        cx.set_global(Theme::dark());
 
         cx.activate(true);
         cx.on_window_closed(|cx| {

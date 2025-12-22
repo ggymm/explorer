@@ -1,12 +1,12 @@
 [package]
 name = "explorer-local-provider"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+version.workspace = true
 
 [dependencies]
 explorer-storage.workspace = true
+
 async-trait.workspace = true
-smol = { workspace = true }
-anyhow.workspace = true
 mime_guess.workspace = true
+smol.workspace = true

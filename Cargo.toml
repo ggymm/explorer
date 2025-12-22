@@ -14,36 +14,27 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# 内部依赖
 explorer-common = { path = "crates/explorer-common" }
 explorer-component = { path = "crates/explorer-component" }
 explorer-storage = { path = "crates/explorer-storage" }
 explorer-local-provider = { path = "crates/providers/explorer-local-provider" }
 
-# GPUI 相关
 gpui = { git = "https://github.com/zed-industries/zed" }
-#gpui = {version = "0.2.2"}
 
-# 异步运行时
-tokio = { version = "1", features = ["full"] }
-smol = "2"
-async-trait = "0.1"
-
-# 错误处理
-anyhow = "1"
-
-# 序列化
+anyhow = { version = "1" }
+async-trait = { version = "0.1" }
+dirs = { version = "5" }
+mime_guess = { version = "2" }
+rust-embed = {version = "8"}
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1" }
+smol = { version = "2" }
+thiserror = { version = "2" }
+tokio = { version = "1", features = ["full"] }
 
-# 日志
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# 工具
-dirs = "5"
-mime_guess = "2"
 
 [profile.dev]
 opt-level = 0

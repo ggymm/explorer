@@ -372,7 +372,7 @@ use std::{
 };
 
 use dirs::home_dir;
-use gpui::*;
+use gpui::{prelude::*,*};
 use tracing_appender::{
     non_blocking,
     rolling::{RollingFileAppender, Rotation},
