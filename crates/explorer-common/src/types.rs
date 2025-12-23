@@ -2,6 +2,9 @@ use std::{collections::HashMap, time::SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+/// 面板 ID 类型
+pub type PanelId = u64;
+
 /// 存储根节点信息（用于侧边栏显示）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootItem {

@@ -1,96 +1,4 @@
-# layout Specification
-
-## Purpose
-TBD - created by archiving change init-project-structure. Update Purpose after archive.
-## Requirements
-### Requirement: 左右分栏布局
-系统 MUST 实现左右分栏的主布局结构。
-
-#### Scenario: 分栏布局显示
-- **WHEN** 应用启动
-- **THEN** 窗口显示左右两栏布局
-- **AND** 左侧栏占据固定或可调整宽度（默认 250px）
-- **AND** 右侧栏占据剩余空间
-- **AND** 两栏之间有明显的视觉分隔
-
-#### Scenario: 布局响应窗口大小
-- **WHEN** 用户调整窗口大小
-- **THEN** 布局自动适应新的窗口尺寸
-- **AND** 左侧栏保持配置的宽度
-- **AND** 右侧栏填充剩余空间
-- **AND** 不出现布局错乱或重叠
-
-### Requirement: 侧边栏组件
-系统 MUST 实现左侧边栏组件，显示导航信息。
-
-#### Scenario: 侧边栏基本显示
-- **WHEN** 应用启动
-- **THEN** 左侧边栏可见
-- **AND** 侧边栏分为两个区域（磁盘列表、常用目录）
-- **AND** 每个区域有清晰的标题
-
-#### Scenario: 磁盘列表显示
-- **WHEN** 侧边栏渲染
-- **THEN** 通过 StorageProvider.get_roots 获取存储根节点列表
-- **AND** 显示所有根节点（本地磁盘、挂载点等）
-- **AND** 每个根节点显示名称和路径
-- **AND** 支持不同类型的存储根节点（本地、网络、云盘）
-
-#### Scenario: 常用目录显示
-- **WHEN** 侧边栏渲染
-- **THEN** 显示常用目录列表
-- **AND** 至少包含用户主目录
-- **AND** 可选包含文档、下载、桌面等目录
-- **AND** 每个目录显示图标和名称
-
-#### Scenario: 侧边栏项目可点击
-- **WHEN** 用户点击侧边栏中的存储根节点或目录
-- **THEN** 右侧主面板切换到对应路径
-- **AND** 通过 StorageProvider 加载文件列表
-- **AND** 文件列表更新为新路径内容
-
-### Requirement: 主面板组件
-系统 MUST 实现右侧主面板组件，支持单面板和多面板拆分模式。
-
-#### Scenario: 主面板基本显示
-- **WHEN** 应用启动
-- **THEN** 右侧主面板可见
-- **AND** 主面板占据右侧所有可用空间
-- **AND** 初始显示单个面板，包含标题栏和文件列表
-
-#### Scenario: 主面板显示当前路径
-- **WHEN** 面板渲染
-- **THEN** 每个面板的标题栏顶部显示当前目录路径
-- **AND** 路径清晰可读
-- **AND** 路径随导航更新
-
-#### Scenario: 主面板拆分模式
-- **WHEN** 用户执行拆分操作后
-- **THEN** 主面板显示多个子面板
-- **AND** 子面板之间使用 Resizable 组件分隔
-- **AND** 每个子面板独立显示内容和标题栏
-- **AND** 子面板可以继续拆分
-
-#### Scenario: 面板数据独立性
-- **WHEN** 主面板包含多个子面板
-- **THEN** 每个子面板独立管理自己的路径和文件列表
-- **AND** 在一个面板中导航不影响其他面板
-- **AND** 每个面板可以独立加载数据
-
-### Requirement: 布局组件复用
-系统 MUST 提供可复用的布局组件。
-
-#### Scenario: 组件定义在 comps crate
-- **WHEN** 查看项目结构
-- **THEN** 布局相关组件定义在 `crates/comps` 中
-- **AND** app crate 可以导入和使用这些组件
-- **AND** 组件接口清晰，易于使用
-
-#### Scenario: 布局灵活性
-- **WHEN** 实现布局组件
-- **THEN** 侧边栏宽度可配置
-- **AND** 布局方向可扩展（为将来的横向分栏做准备）
-- **AND** 组件样式可定制
+## ADDED Requirements
 
 ### Requirement: 面板树数据结构
 系统 MUST 实现递归的面板树结构，支持任意深度的面板嵌套。
@@ -181,3 +89,32 @@ TBD - created by archiving change init-project-structure. Update Purpose after a
 - **AND** 面板包含标题栏和文件列表
 - **AND** 标题栏显示拆分按钮
 
+## MODIFIED Requirements
+
+### Requirement: 主面板组件
+系统 MUST 实现右侧主面板组件，支持单面板和多面板拆分模式。
+
+#### Scenario: 主面板基本显示
+- **WHEN** 应用启动
+- **THEN** 右侧主面板可见
+- **AND** 主面板占据右侧所有可用空间
+- **AND** 初始显示单个面板，包含标题栏和文件列表
+
+#### Scenario: 主面板显示当前路径
+- **WHEN** 面板渲染
+- **THEN** 每个面板的标题栏顶部显示当前目录路径
+- **AND** 路径清晰可读
+- **AND** 路径随导航更新
+
+#### Scenario: 主面板拆分模式
+- **WHEN** 用户执行拆分操作后
+- **THEN** 主面板显示多个子面板
+- **AND** 子面板之间使用 Resizable 组件分隔
+- **AND** 每个子面板独立显示内容和标题栏
+- **AND** 子面板可以继续拆分
+
+#### Scenario: 面板数据独立性
+- **WHEN** 主面板包含多个子面板
+- **THEN** 每个子面板独立管理自己的路径和文件列表
+- **AND** 在一个面板中导航不影响其他面板
+- **AND** 每个面板可以独立加载数据

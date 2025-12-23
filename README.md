@@ -30,4 +30,12 @@ cargo update
 /openspec:archive       归档已部署的 OpenSpec 变更并更新规范。 (project)
 /openspec:proposal      搭建新的 OpenSpec 变更并严格验证。 (project)
 
+/openspec:proposal
+1. 
+2. 
+
+/openspec:apply
+
+/openspec:archive 存储变更，并且准备git提交文案
+
 ```

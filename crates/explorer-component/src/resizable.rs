@@ -4,8 +4,7 @@ use gpui::{prelude::*, *};
 
 use crate::Theme;
 
-const HANDLE_SIZE: Pixels = px(1.);
-const HANDLE_PADDING: Pixels = px(4.);
+const HANDLE_SIZE: Pixels = px(3.);
 
 /// 可调整大小组件的状态管理
 pub struct ResizableState {
@@ -32,6 +31,11 @@ impl ResizableState {
         self.size
     }
 
+    /// 获取容器的边界
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds
+    }
+
     /// 设置第一个面板的大小
     fn resize_first_panel(&mut self, new_size: Pixels, cx: &mut Context<Self>) {
         let container_size = match self.axis {
@@ -47,7 +51,7 @@ impl ResizableState {
         let clamped_size = new_size
             .max(self.range.start)
             .min(self.range.end)
-            .min(container_size - self.range.start); // 确保第二个面板至少有最小宽度/高度
+            .min(container_size); // 允许第一个面板占满容器，不限制第二个面板的最小尺寸
 
         self.size = clamped_size;
 
@@ -136,100 +140,103 @@ impl RenderOnce for Resizable {
             })
         });
 
-        let theme = cx.global::<Theme>();
+        // 获取第一个面板的大小
         let first_size = state.read(cx).size();
         let is_resizing = state.read(cx).resizing;
+
+        let theme = cx.global::<Theme>();
         let axis = self.axis;
-        let range = self.range.clone();
+        let resizable_id = self.id.clone();  // 保存 ID 用于生成唯一的手柄 ID
 
         let container_state = state.clone();
 
-        // 根据方向构建布局
+        // 使用绝对定位布局，不使用 flex
         let content = div()
-            .flex()
+            .relative()
             .size_full()
-            // 根据 axis 设置 flex 方向
-            .when(axis == Axis::Horizontal, |this| this.flex_row())
-            .when(axis == Axis::Vertical, |this| this.flex_col())
             // 第一个面板（横向时在左侧，纵向时在顶部）
             .child({
-                let mut panel = div().flex().flex_col().relative().child(self.first);
+                let panel = div()
+                    .absolute()
+                    .flex()
+                    .flex_col()
+                    .child(self.first);
 
-                // 根据方向设置尺寸
-                panel = match axis {
-                    Axis::Horizontal => panel
-                        .h_full()
-                        .w(first_size)
-                        .min_w(range.start)
-                        .max_w(range.end),
-                    Axis::Vertical => panel
-                        .w_full()
-                        .h(first_size)
-                        .min_h(range.start)
-                        .max_h(range.end),
-                };
+                // 根据方向设置位置和尺寸
+                match axis {
+                    Axis::Horizontal => {
+                        // 横向：第一个面板在左侧
+                        panel.left_0().top_0().h_full().w(first_size)
+                    }
+                    Axis::Vertical => {
+                        // 纵向：第一个面板在顶部
+                        panel.left_0().top_0().w_full().h(first_size)
+                    }
+                }
+            })
+            // 第二个面板（横向时在右侧，纵向时在底部）
+            .child({
+                let panel = div()
+                    .absolute()
+                    .flex()
+                    .flex_col()
+                    .child(self.second);
 
-                // 添加拖拽手柄
+                // 根据方向设置位置和尺寸
+                match axis {
+                    Axis::Horizontal => {
+                        // 横向：第二个面板在右侧，从 first_size 开始到容器右边界
+                        panel.left(first_size).top_0().right_0().h_full()
+                    }
+                    Axis::Vertical => {
+                        // 纵向：第二个面板在底部，从 first_size 开始到容器底边界
+                        panel.left_0().top(first_size).bottom_0().w_full()
+                    }
+                }
+            })
+            // 拖拽手柄（独立元素，放在最上层）
+            .child({
                 let handle = match axis {
                     Axis::Horizontal => div()
-                        .id("resize-handle")
+                        .id(ElementId::Name(
+                            format!("{}-resize-handle", resizable_id.clone()).into(),
+                        ))
                         .absolute()
+                        .left(first_size - HANDLE_SIZE / 2.0)
                         .top_0()
-                        .right(-HANDLE_PADDING)
                         .h_full()
                         .w(HANDLE_SIZE)
-                        .px(HANDLE_PADDING)
                         .cursor_col_resize()
-                        .child(
-                            div()
-                                .h_full()
-                                .w(HANDLE_SIZE)
-                                .bg(if is_resizing {
-                                    theme.colors.accent
-                                } else {
-                                    theme.colors.border
-                                })
-                                .hover(|style| style.bg(theme.colors.accent)),
-                        ),
+                        .bg(if is_resizing {
+                            theme.colors.accent
+                        } else {
+                            theme.colors.border
+                        })
+                        .hover(|style| style.bg(theme.colors.accent)),
                     Axis::Vertical => div()
-                        .id("resize-handle")
+                        .id(ElementId::Name(
+                            format!("{}-resize-handle", resizable_id.clone()).into(),
+                        ))
                         .absolute()
-                        .bottom(-HANDLE_PADDING)
+                        .top(first_size - HANDLE_SIZE / 2.0)
                         .left_0()
                         .w_full()
                         .h(HANDLE_SIZE)
-                        .py(HANDLE_PADDING)
                         .cursor_row_resize()
-                        .child(
-                            div()
-                                .w_full()
-                                .h(HANDLE_SIZE)
-                                .bg(if is_resizing {
-                                    theme.colors.accent
-                                } else {
-                                    theme.colors.border
-                                })
-                                .hover(|style| style.bg(theme.colors.accent)),
-                        ),
+                        .bg(if is_resizing {
+                            theme.colors.accent
+                        } else {
+                            theme.colors.border
+                        })
+                        .hover(|style| style.bg(theme.colors.accent)),
                 };
 
-                panel.child(handle.on_mouse_down(MouseButton::Left, {
+                handle.on_mouse_down(MouseButton::Left, {
                     let state = state.clone();
                     move |_, _, cx| {
                         state.update(cx, |s, cx| s.start_resizing(cx));
                     }
-                }))
-            })
-            // 第二个面板（横向时在右侧，纵向时在底部）
-            .child({
-                let mut panel = div().flex().flex_col().flex_1().child(self.second);
-
-                panel = match axis {
-                    Axis::Horizontal => panel.h_full(),
-                    Axis::Vertical => panel.w_full(),
-                };
-
-                panel
+                })
             })
             // 全局鼠标移动事件处理
             .child(ResizableMouseHandler {
@@ -293,9 +300,12 @@ impl Element for ResizableContainer {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        // 更新状态中的bounds
-        self.state.update(cx, |s, _| {
-            s.bounds = bounds;
+        // 更新状态中的bounds，如果bounds发生变化则通知重新渲染
+        self.state.update(cx, |s, cx| {
+            if s.bounds != bounds {
+                s.bounds = bounds;
+                cx.notify();
+            }
         });
 
         self.content.prepaint(window, cx);
@@ -370,17 +380,22 @@ impl Element for ResizableMouseHandler {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) {
         let state = self.state.clone();
-        let is_resizing = state.read(cx).resizing;
         let axis = self.axis;
 
         // 处理鼠标移动事件
         window.on_mouse_event({
             let state = state.clone();
             move |e: &MouseMoveEvent, phase, _, cx| {
-                if !phase.bubble() || !is_resizing {
+                if !phase.bubble() {
+                    return;
+                }
+
+                // 动态检查是否正在调整大小
+                let is_resizing = state.read(cx).resizing;
+                if !is_resizing {
                     return;
                 }
 
@@ -402,7 +417,13 @@ impl Element for ResizableMouseHandler {
         window.on_mouse_event({
             let state = state.clone();
             move |_: &MouseUpEvent, phase, _, cx| {
-                if !phase.bubble() || !is_resizing {
+                if !phase.bubble() {
+                    return;
+                }
+
+                // 动态检查是否正在调整大小
+                let is_resizing = state.read(cx).resizing;
+                if !is_resizing {
                     return;
                 }
 

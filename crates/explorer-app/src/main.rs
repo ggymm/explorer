@@ -10,12 +10,205 @@ use tracing_subscriber::{EnvFilter, fmt::layer, prelude::*};
 
 use explorer_common::*;
 use explorer_component::{
-    Assets, GroupedList, Icon, IconName, List, ListGroup, ListItem, Resizable, Theme,
+    Assets, GroupedList, Icon, IconName, List, ListGroup, ListItem, PanelTitleBar, Resizable,
+    ResizableState, Theme, TitleBar,
 };
 use explorer_local_provider::LocalFileSystemProvider;
 use explorer_storage::*;
 
 mod quick_access;
+
+// ===== 面板数据结构 =====
+
+/// 面板节点枚举，用于构建面板树
+#[derive(Clone)]
+pub enum PanelNode {
+    /// 叶子节点：包含实际的文件浏览器实例
+    Leaf {
+        id: PanelId,
+        path: String,
+        entries: Vec<FileItem>,
+        loading: bool,
+        error: Option<String>,
+        bounds: Bounds<Pixels>, // 保存面板尺寸
+    },
+    /// 分支节点：包含两个子面板和拆分方向
+    Split {
+        id: PanelId,
+        axis: Axis,
+        first: Box<PanelNode>,
+        second: Box<PanelNode>,
+        state: Entity<ResizableState>,
+        bounds: Bounds<Pixels>, // 保存容器尺寸
+    },
+}
+
+impl PanelNode {
+    /// 创建新的叶子面板
+    pub fn new_leaf(id: PanelId, path: String) -> Self {
+        Self::Leaf {
+            id,
+            path,
+            entries: Vec::new(),
+            loading: true,
+            error: None,
+            bounds: Bounds::default(),
+        }
+    }
+
+    /// 获取面板 ID
+    pub fn get_id(&self) -> PanelId {
+        match self {
+            Self::Leaf { id, .. } => *id,
+            Self::Split { id, .. } => *id,
+        }
+    }
+
+    /// 拆分指定 ID 的叶子面板
+    pub fn split_panel(
+        &mut self,
+        target_id: PanelId,
+        axis: Axis,
+        split_id: PanelId,
+        new_leaf_id: PanelId,
+        new_path: String,
+        initial_size: Pixels,
+        cx: &mut App,
+    ) -> bool {
+        match self {
+            PanelNode::Leaf {
+                id,
+                path,
+                entries,
+                loading,
+                error,
+                bounds,
+            } if *id == target_id => {
+                // 找到目标面板，执行拆分
+                let old_path = path.clone();
+                let old_id = *id;
+                // 保留原面板的数据
+                let old_entries = entries.clone();
+                let old_loading = *loading;
+                let old_error = error.clone();
+                let old_bounds = *bounds;
+
+                // 创建两个新的叶子节点：第一个保留原数据，第二个创建新面板
+                let first = Box::new(PanelNode::Leaf {
+                    id: old_id,
+                    path: old_path,
+                    entries: old_entries,
+                    loading: old_loading,
+                    error: old_error,
+                    bounds: Bounds::default(),
+                });
+                let second = Box::new(PanelNode::new_leaf(new_leaf_id, new_path));
+
+                // 创建 ResizableState，使用传入的 initial_size
+                // range 设置为 0 到最大值，不限制拆分尺寸
+                let state =
+                    cx.new(|_| ResizableState::new(axis, initial_size, px(0.)..Pixels::MAX));
+
+                // 替换当前节点为 Split 节点，使用新的 split_id
+                *self = PanelNode::Split {
+                    id: split_id, // 使用新的 Split ID
+                    axis,
+                    first,
+                    second,
+                    state,
+                    bounds: old_bounds, // 使用原面板的尺寸
+                };
+
+                true
+            }
+            PanelNode::Split { first, second, .. } => {
+                // 递归查找子节点
+                first.split_panel(
+                    target_id,
+                    axis,
+                    split_id,
+                    new_leaf_id,
+                    new_path.clone(),
+                    initial_size,
+                    cx,
+                ) || second.split_panel(target_id, axis, split_id, new_leaf_id, new_path, initial_size, cx)
+            }
+            _ => false,
+        }
+    }
+
+    /// 查找指定 ID 的面板
+    pub fn find_panel(&self, target_id: PanelId) -> Option<&PanelNode> {
+        match self {
+            PanelNode::Leaf { id, .. } if *id == target_id => Some(self),
+            PanelNode::Split {
+                id, first, second, ..
+            } => {
+                if *id == target_id {
+                    Some(self)
+                } else {
+                    first
+                        .find_panel(target_id)
+                        .or_else(|| second.find_panel(target_id))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// 更新指定面板的数据
+    pub fn update_panel_data(
+        &mut self,
+        target_id: PanelId,
+        path: String,
+        entries: Vec<FileItem>,
+        loading: bool,
+        error: Option<String>,
+    ) -> bool {
+        match self {
+            PanelNode::Leaf {
+                id,
+                path: panel_path,
+                entries: panel_entries,
+                loading: panel_loading,
+                error: panel_error,
+                ..
+            } if *id == target_id => {
+                *panel_path = path;
+                *panel_entries = entries;
+                *panel_loading = loading;
+                *panel_error = error;
+                true
+            }
+            PanelNode::Split { first, second, .. } => {
+                first.update_panel_data(
+                    target_id,
+                    path.clone(),
+                    entries.clone(),
+                    loading,
+                    error.clone(),
+                ) || second.update_panel_data(target_id, path, entries, loading, error)
+            }
+            _ => false,
+        }
+    }
+
+    /// 更新指定面板的 bounds（仅用于 Leaf 节点）
+    pub fn update_panel_bounds(&mut self, target_id: PanelId, new_bounds: Bounds<Pixels>) -> bool {
+        match self {
+            PanelNode::Leaf { id, bounds, .. } if *id == target_id => {
+                *bounds = new_bounds;
+                true
+            }
+            PanelNode::Split { first, second, .. } => {
+                // Split 节点的 bounds 由 ResizableContainer 管理，只递归处理子节点
+                first.update_panel_bounds(target_id, new_bounds)
+                    || second.update_panel_bounds(target_id, new_bounds)
+            }
+            _ => false,
+        }
+    }
+}
 
 // ===== 侧边栏数据类型 =====
 
@@ -57,11 +250,11 @@ impl From<&RootItem> for SidebarItem {
 pub struct Explorer {
     provider: Arc<dyn StorageProvider>,
     roots: Vec<RootItem>,
-    current_path: String,
     selected_sidebar_path: Option<String>,
-    entries: Vec<FileItem>,
-    loading: bool,
-    error: Option<String>,
+    // 面板树管理
+    panel_tree: PanelNode,
+    active_panel_id: Option<PanelId>,
+    next_panel_id: u64,
 }
 
 impl Explorer {
@@ -74,15 +267,214 @@ impl Explorer {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "/".to_string());
 
+        // 创建初始的单面板树
+        let initial_panel_id = 0;
+        let panel_tree = PanelNode::new_leaf(initial_panel_id, default_path.clone());
+
         Self {
             provider,
             roots: Vec::new(),
-            current_path: default_path.clone(),
             selected_sidebar_path: Some(default_path),
-            entries: Vec::new(),
-            loading: true,
-            error: None,
+            panel_tree,
+            active_panel_id: Some(initial_panel_id),
+            next_panel_id: 1,
         }
+    }
+
+    /// 横向拆分面板
+    pub fn split_panel_horizontal(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(active_id) = self.active_panel_id {
+            // 获取当前激活面板的路径和尺寸
+            let (path, panel_bounds) = if let Some(panel) = self.panel_tree.find_panel(active_id) {
+                match panel {
+                    PanelNode::Leaf { path, bounds, .. } => (path.clone(), *bounds),
+                    PanelNode::Split { state, first, .. } => {
+                        // Split 节点：从 ResizableState 获取 bounds，路径从第一个子面板获取
+                        let bounds = state.read(cx).bounds();
+                        let path = match first.as_ref() {
+                            PanelNode::Leaf { path, .. } => path.clone(),
+                            PanelNode::Split { first, .. } => {
+                                // 递归获取最左侧/最上方的叶子节点路径
+                                let mut node = first.as_ref();
+                                loop {
+                                    match node {
+                                        PanelNode::Leaf { path, .. } => break path.clone(),
+                                        PanelNode::Split { first, .. } => node = first.as_ref(),
+                                    }
+                                }
+                            }
+                        };
+                        (path, bounds)
+                    }
+                }
+            } else {
+                let default_path = home_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "/".to_string());
+                (default_path, Bounds::default())
+            };
+
+            // 分配两个新 ID：一个给 Split 节点，一个给新的 Leaf 节点
+            let split_id = self.next_panel_id;
+            self.next_panel_id += 1;
+            let new_leaf_id = self.next_panel_id;
+            self.next_panel_id += 1;
+
+            // 横向拆分：使用面板实际宽度的 50%
+            let initial_width = panel_bounds.size.width / 2.0;
+
+            // 执行拆分
+            if self.panel_tree.split_panel(
+                active_id,
+                Axis::Horizontal,
+                split_id,
+                new_leaf_id,
+                path.clone(),
+                initial_width,
+                cx,
+            ) {
+                tracing::info!(
+                    "横向拆分面板 {} 成功，Split ID: {}，新 Leaf ID: {}",
+                    active_id,
+                    split_id,
+                    new_leaf_id
+                );
+                // 加载新面板的数据
+                self.load_directory_for_panel(new_leaf_id, path, window, cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// 纵向拆分面板
+    pub fn split_panel_vertical(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(active_id) = self.active_panel_id {
+            // 获取当前激活面板的路径和尺寸
+            let (path, panel_bounds) = if let Some(panel) = self.panel_tree.find_panel(active_id) {
+                match panel {
+                    PanelNode::Leaf { path, bounds, .. } => (path.clone(), *bounds),
+                    PanelNode::Split { state, first, .. } => {
+                        // Split 节点：从 ResizableState 获取 bounds，路径从第一个子面板获取
+                        let bounds = state.read(cx).bounds();
+                        let path = match first.as_ref() {
+                            PanelNode::Leaf { path, .. } => path.clone(),
+                            PanelNode::Split { first, .. } => {
+                                // 递归获取最左侧/最上方的叶子节点路径
+                                let mut node = first.as_ref();
+                                loop {
+                                    match node {
+                                        PanelNode::Leaf { path, .. } => break path.clone(),
+                                        PanelNode::Split { first, .. } => node = first.as_ref(),
+                                    }
+                                }
+                            }
+                        };
+                        (path, bounds)
+                    }
+                }
+            } else {
+                let default_path = home_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "/".to_string());
+                (default_path, Bounds::default())
+            };
+
+            // 分配两个新 ID：一个给 Split 节点，一个给新的 Leaf 节点
+            let split_id = self.next_panel_id;
+            self.next_panel_id += 1;
+            let new_leaf_id = self.next_panel_id;
+            self.next_panel_id += 1;
+
+            // 纵向拆分：使用面板实际高度的 50%
+            let initial_height = panel_bounds.size.height / 2.0;
+
+            // 执行拆分
+            if self.panel_tree.split_panel(
+                active_id,
+                Axis::Vertical,
+                split_id,
+                new_leaf_id,
+                path.clone(),
+                initial_height,
+                cx,
+            ) {
+                tracing::info!(
+                    "纵向拆分面板 {} 成功，Split ID: {}，新 Leaf ID: {}",
+                    active_id,
+                    split_id,
+                    new_leaf_id
+                );
+                // 加载新面板的数据
+                self.load_directory_for_panel(new_leaf_id, path, window, cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// 设置激活面板
+    pub fn set_active_panel(&mut self, panel_id: PanelId, cx: &mut Context<Self>) {
+        self.active_panel_id = Some(panel_id);
+        cx.notify();
+    }
+
+    /// 更新面板的 bounds
+    pub fn update_panel_bounds(&mut self, panel_id: PanelId, bounds: Bounds<Pixels>) {
+        self.panel_tree.update_panel_bounds(panel_id, bounds);
+    }
+
+    /// 为指定面板加载目录
+    pub fn load_directory_for_panel(
+        &mut self,
+        panel_id: PanelId,
+        path: String,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        tracing::info!("为面板 {} 加载目录: {}", panel_id, path);
+
+        // 更新面板状态为加载中
+        self.panel_tree
+            .update_panel_data(panel_id, path.clone(), Vec::new(), true, None);
+        cx.notify();
+
+        let provider = self.provider.clone();
+        let path_clone = path.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            // 在后台线程执行目录加载
+            let ret = cx
+                .background_executor()
+                .spawn(async move { provider.list_entries(&path).await })
+                .await;
+
+            // 更新 UI
+            let _ = cx.update(|_, cx| {
+                let _ = this.update(cx, |explorer, cx| match ret {
+                    Ok(entries) => {
+                        tracing::info!("面板 {} 成功加载 {} 个条目", panel_id, entries.len());
+                        explorer.panel_tree.update_panel_data(
+                            panel_id,
+                            path_clone.clone(),
+                            entries,
+                            false,
+                            None,
+                        );
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        tracing::error!("面板 {} 加载失败: {:?}", panel_id, e);
+                        explorer.panel_tree.update_panel_data(
+                            panel_id,
+                            path_clone,
+                            Vec::new(),
+                            false,
+                            Some(format!("加载失败: {}", e)),
+                        );
+                        cx.notify();
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     /// 初始化 Explorer（启动异步数据加载）
@@ -90,7 +482,19 @@ impl Explorer {
         tracing::info!("初始化 Explorer");
 
         let provider = self.provider.clone();
-        let current_path = self.current_path.clone();
+        // 获取初始面板的路径
+        let initial_panel_id = self.active_panel_id.unwrap_or(0);
+        let initial_path = if let Some(PanelNode::Leaf { path, .. }) =
+            self.panel_tree.find_panel(initial_panel_id)
+        {
+            path.clone()
+        } else {
+            home_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "/".to_string())
+        };
+
+        let initial_path_clone = initial_path.clone();
         cx.spawn_in(window, async move |this, cx| {
             tracing::info!("开始异步加载数据");
 
@@ -102,8 +506,8 @@ impl Explorer {
                     let roots = provider.get_roots().await?;
                     tracing::info!("加载到 {} 个存储根节点", roots.len());
 
-                    // 加载初始目录（使用用户主目录）
-                    let entries = provider.list_entries(&current_path).await?;
+                    // 加载初始目录
+                    let entries = provider.list_entries(&initial_path).await?;
                     tracing::info!("成功加载 {} 个条目", entries.len());
 
                     Ok::<_, anyhow::Error>((roots, entries))
@@ -115,16 +519,26 @@ impl Explorer {
                 let _ = this.update(cx, |explorer, cx| match ret {
                     Ok((roots, entries)) => {
                         explorer.roots = roots;
-                        explorer.entries = entries;
-                        explorer.loading = false;
-                        explorer.error = None;
+                        // 更新初始面板的数据
+                        explorer.panel_tree.update_panel_data(
+                            initial_panel_id,
+                            initial_path_clone.clone(),
+                            entries,
+                            false,
+                            None,
+                        );
                         tracing::info!("数据加载完成");
                         cx.notify();
                     }
                     Err(e) => {
                         tracing::error!("加载失败: {:?}", e);
-                        explorer.loading = false;
-                        explorer.error = Some(format!("加载失败: {}", e));
+                        explorer.panel_tree.update_panel_data(
+                            initial_panel_id,
+                            initial_path_clone,
+                            Vec::new(),
+                            false,
+                            Some(format!("加载失败: {}", e)),
+                        );
                         cx.notify();
                     }
                 });
@@ -133,45 +547,11 @@ impl Explorer {
         .detach();
     }
 
-    /// 加载指定目录
+    /// 加载指定目录（为当前激活的面板）
     pub fn load_directory(&mut self, path: String, window: &Window, cx: &mut Context<Self>) {
-        tracing::info!("请求加载目录: {}", path);
-        self.loading = true;
-        self.error = None;
-        self.current_path = path.clone();
-        cx.notify();
-
-        let provider = self.provider.clone();
-        cx.spawn_in(window, {
-            async move |this, cx| {
-                // 在后台线程执行目录加载
-                let ret = cx
-                    .background_executor()
-                    .spawn(async move { provider.list_entries(&path).await })
-                    .await;
-
-                // 更新 UI
-                let _ = cx.update(|_, cx| {
-                    let _ = this.update(cx, |explorer, cx| match ret {
-                        Ok(entries) => {
-                            tracing::info!("成功加载 {} 个条目", entries.len());
-                            explorer.entries = entries;
-                            explorer.loading = false;
-                            explorer.error = None;
-                            cx.notify();
-                        }
-                        Err(e) => {
-                            tracing::error!("加载目录失败: {}", e);
-                            explorer.loading = false;
-                            explorer.error = Some(format!("加载失败: {}", e));
-                            explorer.entries = Vec::new();
-                            cx.notify();
-                        }
-                    });
-                });
-            }
-        })
-        .detach();
+        if let Some(active_id) = self.active_panel_id {
+            self.load_directory_for_panel(active_id, path, window, cx);
+        }
     }
 }
 
@@ -184,18 +564,89 @@ impl Render for Explorer {
 
         // 获取 Explorer 实体的弱引用用于事件回调
         let this_entity = cx.entity().downgrade();
-        let this_entity_file = this_entity.clone();
 
         // 构建侧边栏
         let sidebar = self.render_sidebar(quick_access_items, theme, &this_entity);
 
-        // 构建文件列表
-        let file_list = self.render_file_list(theme, this_entity_file);
+        // 构建面板树（递归渲染）
+        let panel_content = self.render_panel_node(&self.panel_tree.clone(), theme, &this_entity);
 
-        // 使用可调整大小的布局组件
-        Resizable::new("explorer-layout", sidebar, file_list)
+        // 主内容区域（侧边栏 + 面板）
+        let main_content = Resizable::new("explorer-layout", sidebar, panel_content)
             .size(px(240.))
-            .range(px(180.)..px(480.))
+            .range(px(180.)..px(480.));
+
+        // 构建标题栏
+        let this_clone_h = this_entity.clone();
+        let this_clone_v = this_entity.clone();
+
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(
+                // 标题栏
+                TitleBar::new().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(theme.spacing.sm)
+                        .pr(theme.spacing.md)
+                        .child(
+                            // 横向拆分按钮
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(28.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme.colors.muted))
+                                .child(
+                                    svg()
+                                        .path("icons/columns-split.svg")
+                                        .size(px(16.))
+                                        .text_color(theme.colors.foreground),
+                                )
+                                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                    if let Some(this) = this_clone_h.upgrade() {
+                                        let _ = this.update(cx, |explorer, cx| {
+                                            explorer.split_panel_horizontal(window, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            // 纵向拆分按钮
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(28.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme.colors.muted))
+                                .child(
+                                    svg()
+                                        .path("icons/rows-split.svg")
+                                        .size(px(16.))
+                                        .text_color(theme.colors.foreground),
+                                )
+                                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                    if let Some(this) = this_clone_v.upgrade() {
+                                        let _ = this.update(cx, |explorer, cx| {
+                                            explorer.split_panel_vertical(window, cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                ),
+            )
+            .child(
+                // 主内容区域
+                div().flex_1().child(main_content),
+            )
     }
 }
 
@@ -294,94 +745,239 @@ impl Explorer {
             )
     }
 
-    /// 渲染文件列表
-    fn render_file_list(&self, theme: &Theme, this_entity: WeakEntity<Self>) -> impl IntoElement {
-        let entries = self.entries.clone();
-        let loading = self.loading;
-        let error = self.error.clone();
+    /// 递归渲染面板节点
+    fn render_panel_node(
+        &self,
+        node: &PanelNode,
+        theme: &Theme,
+        this_entity: &WeakEntity<Self>,
+    ) -> AnyElement {
+        match node {
+            PanelNode::Leaf {
+                id,
+                path,
+                entries,
+                loading,
+                error,
+                ..
+            } => {
+                // 渲染叶子面板：标题栏 + 文件列表
+                let panel_id = *id;
+                let is_active = self.active_panel_id == Some(panel_id);
+                let this_clone_list = this_entity.clone();
+                let this_clone_title = this_entity.clone();
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(theme.colors.background)
-            .child(
-                // 路径栏
-                div()
+                let content = div()
                     .flex()
-                    .items_center()
-                    .p(theme.spacing.md)
-                    .border_b_1()
-                    .border_color(theme.colors.border)
+                    .flex_col()
+                    .size_full()
+                    .bg(theme.colors.background)
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.colors.muted_foreground)
-                            .child(self.current_path.clone()),
-                    ),
-            )
-            .child(
-                // 文件列表内容 - 使用 List 组件
-                div()
-                    .id("file-list-content")
-                    .flex_1()
-                    .overflow_scroll()
-                    .p(theme.spacing.sm)
-                    .child(
-                        List::new()
-                            .items(entries)
-                            .loading(loading)
-                            .error(error)
-                            .empty_text("目录为空")
-                            .loading_text("加载中...")
-                            .render_item(move |entry, theme| {
-                                let icon = match entry.item_type {
-                                    ItemType::Directory => Icon::new(IconName::FolderClosed),
-                                    ItemType::File => Icon::new(IconName::File),
-                                    ItemType::Symlink => Icon::new(IconName::File),
-                                };
-
-                                let name_color = if entry.is_hidden {
-                                    theme.colors.muted_foreground
-                                } else {
-                                    theme.colors.foreground
-                                };
-
-                                let entry_path = entry.path.clone();
-                                let entry_type = entry.item_type;
-                                let this_clone = this_entity.clone();
-
-                                let mut item = ListItem::new(entry.path.clone()).child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(theme.spacing.sm)
-                                        .child(icon.text_color(theme.colors.foreground))
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(name_color)
-                                                .child(entry.name.clone()),
-                                        ),
-                                );
-
-                                // 只为目录添加双击事件
-                                if entry_type == ItemType::Directory {
-                                    item = item.on_double_click(move |window, cx| {
-                                        tracing::info!("双击文件夹: {}", entry_path);
-                                        if let Some(this) = this_clone.upgrade() {
-                                            let path = entry_path.clone();
-                                            let _ = this.update(cx, |explorer, cx| {
-                                                explorer.load_directory(path, window, cx);
-                                            });
-                                        }
+                        // 标题栏
+                        PanelTitleBar::new(path.clone()).active(is_active).on_click(
+                            move |_, cx| {
+                                if let Some(this) = this_clone_title.upgrade() {
+                                    let _ = this.update(cx, |explorer, cx| {
+                                        explorer.set_active_panel(panel_id, cx);
                                     });
                                 }
+                            },
+                        ),
+                    )
+                    .child(
+                        // 文件列表
+                        div()
+                            .id(SharedString::from(format!("panel-{}", panel_id)))
+                            .flex_1()
+                            .overflow_scroll()
+                            .p(theme.spacing.sm)
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                if let Some(this) = this_clone_list.upgrade() {
+                                    let _ = this.update(cx, |explorer, cx| {
+                                        explorer.set_active_panel(panel_id, cx);
+                                    });
+                                }
+                            })
+                            .child(
+                                List::new()
+                                    .items(entries.clone())
+                                    .loading(*loading)
+                                    .error(error.clone())
+                                    .empty_text("目录为空")
+                                    .loading_text("加载中...")
+                                    .render_item({
+                                        let this_entity_clone = this_entity.clone();
+                                        move |entry, theme| {
+                                            let icon = match entry.item_type {
+                                                ItemType::Directory => {
+                                                    Icon::new(IconName::FolderClosed)
+                                                }
+                                                ItemType::File => Icon::new(IconName::File),
+                                                ItemType::Symlink => Icon::new(IconName::File),
+                                            };
 
-                                item.into_any_element()
-                            }),
-                    ),
-            )
+                                            let name_color = if entry.is_hidden {
+                                                theme.colors.muted_foreground
+                                            } else {
+                                                theme.colors.foreground
+                                            };
+
+                                            let entry_path = entry.path.clone();
+                                            let entry_type = entry.item_type;
+                                            let this_clone = this_entity_clone.clone();
+
+                                            let mut item = ListItem::new(entry.path.clone()).child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(theme.spacing.sm)
+                                                    .child(icon.text_color(theme.colors.foreground))
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(name_color)
+                                                            .child(entry.name.clone()),
+                                                    ),
+                                            );
+
+                                            // 只为目录添加双击事件
+                                            if entry_type == ItemType::Directory {
+                                                item = item.on_double_click(move |window, cx| {
+                                                    tracing::info!("双击文件夹: {}", entry_path);
+                                                    if let Some(this) = this_clone.upgrade() {
+                                                        let path = entry_path.clone();
+                                                        let _ = this.update(cx, |explorer, cx| {
+                                                            explorer.set_active_panel(panel_id, cx);
+                                                            explorer
+                                                                .load_directory(path, window, cx);
+                                                        });
+                                                    }
+                                                });
+                                            }
+
+                                            item.into_any_element()
+                                        }
+                                    }),
+                            ),
+                    )
+                    .into_any_element();
+
+                // 使用 PanelContainer 包装以捕获 bounds
+                PanelContainer {
+                    panel_id,
+                    explorer: this_entity.clone(),
+                    content,
+                }
+                .into_any_element()
+            }
+            PanelNode::Split {
+                id,
+                axis,
+                first,
+                second,
+                state,
+                ..
+            } => {
+                // 渲染分支节点：使用 Resizable 包装两个子面板
+                let panel_id = *id;
+                let first_panel = self.render_panel_node(first, theme, this_entity);
+                let second_panel = self.render_panel_node(second, theme, this_entity);
+
+                Resizable::new(
+                    format!("split-{}", panel_id),
+                    first_panel,
+                    second_panel,
+                )
+                .axis(*axis)
+                .with_state(state.clone())
+                .into_any_element()
+            }
+        }
+    }
+
+    /// 渲染文件列表（已废弃，保留是为了兼容旧代码）
+    #[allow(dead_code)]
+    fn render_file_list_deprecated(
+        &self,
+        _theme: &Theme,
+        _this_entity: WeakEntity<Self>,
+    ) -> impl IntoElement {
+        // 这个方法已经被 render_panel_node 替代
+        div().child("已废弃的方法")
+    }
+}
+
+// ===== 面板容器元素（用于捕获 Leaf 面板的 bounds）=====
+
+/// 面板容器元素，用于捕获 Leaf 面板的实际渲染尺寸
+struct PanelContainer {
+    panel_id: PanelId,
+    explorer: WeakEntity<Explorer>,
+    content: AnyElement,
+}
+
+impl IntoElement for PanelContainer {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for PanelContainer {
+    type RequestLayoutState = LayoutId;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(ElementId::Name(format!("panel-container-{}", self.panel_id).into()))
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let layout_id = self.content.request_layout(window, cx);
+        (layout_id, layout_id)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        // 更新面板的 bounds
+        if let Some(explorer) = self.explorer.upgrade() {
+            let panel_id = self.panel_id;
+            let _ = explorer.update(cx, |explorer, _| {
+                explorer.update_panel_bounds(panel_id, bounds);
+            });
+        }
+
+        self.content.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content.paint(window, cx);
     }
 }
 
@@ -445,6 +1041,7 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+                titlebar: Some(TitleBar::titlebar_options()),
                 ..Default::default()
             },
             |_, cx| cx.new(|_| Explorer::new()),
