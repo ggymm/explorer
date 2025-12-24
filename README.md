@@ -31,8 +31,7 @@ cargo update
 /openspec:proposal      搭建新的 OpenSpec 变更并严格验证。 (project)
 
 /openspec:proposal
-1. 
-2. 
+
 
 /openspec:apply
 

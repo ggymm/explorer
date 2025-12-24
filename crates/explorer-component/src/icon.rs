@@ -23,6 +23,8 @@ pub enum IconName {
     FolderOpen,
     ColumnsSplit,
     RowsSplit,
+    ChevronRight,
+    Close,
 }
 
 impl IconName {
@@ -43,6 +45,8 @@ impl IconNamed for IconName {
             Self::FolderOpen => "icons/folder-open.svg",
             Self::ColumnsSplit => "icons/columns-split.svg",
             Self::RowsSplit => "icons/rows-split.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Close => "icons/close.svg",
         }
         .into()
     }

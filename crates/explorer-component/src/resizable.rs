@@ -4,7 +4,7 @@ use gpui::{prelude::*, *};
 
 use crate::Theme;
 
-const HANDLE_SIZE: Pixels = px(3.);
+const HANDLE_SIZE: Pixels = px(2.);
 
 /// 可调整大小组件的状态管理
 pub struct ResizableState {

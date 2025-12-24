@@ -6,14 +6,14 @@ use rust_embed::RustEmbed;
 
 mod icon;
 mod list;
-mod panel_title_bar;
+mod breadcrumb;
 mod resizable;
 mod theme;
 mod title_bar;
 
 pub use icon::*;
 pub use list::*;
-pub use panel_title_bar::*;
+pub use breadcrumb::*;
 pub use resizable::*;
 pub use theme::*;
 pub use title_bar::*;

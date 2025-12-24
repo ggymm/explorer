@@ -1,4 +1,10 @@
-use std::{fs::create_dir_all, io::stdout, mem::forget, sync::Arc};
+use std::{
+    collections::HashSet,
+    fs::create_dir_all,
+    io::stdout,
+    mem::forget,
+    sync::Arc,
+};
 
 use dirs::home_dir;
 use gpui::{prelude::*, *};
@@ -10,13 +16,61 @@ use tracing_subscriber::{EnvFilter, fmt::layer, prelude::*};
 
 use explorer_common::*;
 use explorer_component::{
-    Assets, GroupedList, Icon, IconName, List, ListGroup, ListItem, PanelTitleBar, Resizable,
-    ResizableState, Theme, TitleBar,
+    Assets, Breadcrumb, BreadcrumbItem, BreadcrumbState, GroupedList, Icon, IconName, List,
+    ListGroup, ListItem, Resizable, ResizableState, Theme, TitleBar,
 };
 use explorer_local_provider::LocalFileSystemProvider;
 use explorer_storage::*;
 
 mod quick_access;
+
+// ===== 辅助函数 =====
+
+/// 将路径字符串解析为面包屑项
+fn parse_path_to_breadcrumb_items(path: &str) -> Vec<BreadcrumbItem> {
+    let mut items = Vec::new();
+
+    // 处理 Windows 路径
+    #[cfg(target_os = "windows")]
+    {
+        // 检查是否有盘符
+        if let Some((drive, rest)) = path.split_once(':') {
+            let drive_with_colon = format!("{}:", drive);
+            items.push(BreadcrumbItem::new(
+                drive_with_colon.clone(),
+                drive_with_colon,
+            ));
+
+            // 处理盘符后的路径
+            for segment in rest.split('\\').filter(|s| !s.is_empty()) {
+                let current_path = if items.is_empty() {
+                    segment.to_string()
+                } else {
+                    format!("{}\\{}", items.last().unwrap().value, segment)
+                };
+                items.push(BreadcrumbItem::new(segment, current_path));
+            }
+            return items;
+        }
+    }
+
+    // Unix 风格路径
+    if path == "/" {
+        items.push(BreadcrumbItem::new("/", "/"));
+        return items;
+    }
+
+    items.push(BreadcrumbItem::new("/", "/"));
+
+    let mut current_path = String::from("");
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
+        current_path.push('/');
+        current_path.push_str(segment);
+        items.push(BreadcrumbItem::new(segment, current_path.clone()));
+    }
+
+    items
+}
 
 // ===== 面板数据结构 =====
 
@@ -31,6 +85,7 @@ pub enum PanelNode {
         loading: bool,
         error: Option<String>,
         bounds: Bounds<Pixels>, // 保存面板尺寸
+        breadcrumb_state: Entity<BreadcrumbState>, // 面包屑状态
     },
     /// 分支节点：包含两个子面板和拆分方向
     Split {
@@ -45,7 +100,8 @@ pub enum PanelNode {
 
 impl PanelNode {
     /// 创建新的叶子面板
-    pub fn new_leaf(id: PanelId, path: String) -> Self {
+    pub fn new_leaf(id: PanelId, path: String, cx: &mut App) -> Self {
+        let breadcrumb_state = cx.new(|_| BreadcrumbState::new());
         Self::Leaf {
             id,
             path,
@@ -53,6 +109,7 @@ impl PanelNode {
             loading: true,
             error: None,
             bounds: Bounds::default(),
+            breadcrumb_state,
         }
     }
 
@@ -83,6 +140,7 @@ impl PanelNode {
                 loading,
                 error,
                 bounds,
+                breadcrumb_state,
             } if *id == target_id => {
                 // 找到目标面板，执行拆分
                 let old_path = path.clone();
@@ -92,6 +150,7 @@ impl PanelNode {
                 let old_loading = *loading;
                 let old_error = error.clone();
                 let old_bounds = *bounds;
+                let old_breadcrumb_state = breadcrumb_state.clone();
 
                 // 创建两个新的叶子节点：第一个保留原数据，第二个创建新面板
                 let first = Box::new(PanelNode::Leaf {
@@ -101,8 +160,9 @@ impl PanelNode {
                     loading: old_loading,
                     error: old_error,
                     bounds: Bounds::default(),
+                    breadcrumb_state: old_breadcrumb_state,
                 });
-                let second = Box::new(PanelNode::new_leaf(new_leaf_id, new_path));
+                let second = Box::new(PanelNode::new_leaf(new_leaf_id, new_path, cx));
 
                 // 创建 ResizableState，使用传入的 initial_size
                 // range 设置为 0 到最大值，不限制拆分尺寸
@@ -255,11 +315,14 @@ pub struct Explorer {
     panel_tree: PanelNode,
     active_panel_id: Option<PanelId>,
     next_panel_id: u64,
+    // 文件选中状态
+    selected_items: HashSet<String>,
+    last_selected_index: Option<usize>,
 }
 
 impl Explorer {
     /// 创建 Explorer 实例
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         let provider: Arc<dyn StorageProvider> = Arc::new(LocalFileSystemProvider::new());
 
         // 使用用户主目录作为默认路径，如果获取失败则使用根目录
@@ -269,7 +332,7 @@ impl Explorer {
 
         // 创建初始的单面板树
         let initial_panel_id = 0;
-        let panel_tree = PanelNode::new_leaf(initial_panel_id, default_path.clone());
+        let panel_tree = PanelNode::new_leaf(initial_panel_id, default_path.clone(), cx);
 
         Self {
             provider,
@@ -278,6 +341,8 @@ impl Explorer {
             panel_tree,
             active_panel_id: Some(initial_panel_id),
             next_panel_id: 1,
+            selected_items: HashSet::new(),
+            last_selected_index: None,
         }
     }
 
@@ -415,6 +480,69 @@ impl Explorer {
     pub fn set_active_panel(&mut self, panel_id: PanelId, cx: &mut Context<Self>) {
         self.active_panel_id = Some(panel_id);
         cx.notify();
+    }
+
+    // ===== 文件选中状态管理 =====
+
+    /// 检查文件是否被选中
+    pub fn is_selected(&self, path: &str) -> bool {
+        self.selected_items.contains(path)
+    }
+
+    /// 添加选中项
+    pub fn add_selection(&mut self, path: String, cx: &mut Context<Self>) {
+        self.selected_items.insert(path);
+        cx.notify();
+    }
+
+    /// 移除选中项
+    pub fn remove_selection(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.selected_items.remove(path);
+        cx.notify();
+    }
+
+    /// 清空所有选中项
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.selected_items.clear();
+        self.last_selected_index = None;
+        cx.notify();
+    }
+
+    /// 切换选中状态
+    pub fn toggle_selection(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.selected_items.contains(&path) {
+            self.selected_items.remove(&path);
+        } else {
+            self.selected_items.insert(path);
+        }
+        cx.notify();
+    }
+
+    /// 设置单个选中项（清除其他选中）
+    pub fn set_single_selection(&mut self, path: String, index: usize, cx: &mut Context<Self>) {
+        self.selected_items.clear();
+        self.selected_items.insert(path);
+        self.last_selected_index = Some(index);
+        cx.notify();
+    }
+
+    /// 范围选择（Shift + 点击）
+    pub fn select_range(
+        &mut self,
+        paths: &[String],
+        current_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(last_index) = self.last_selected_index {
+            let start = last_index.min(current_index);
+            let end = last_index.max(current_index);
+            for i in start..=end {
+                if let Some(path) = paths.get(i) {
+                    self.selected_items.insert(path.clone());
+                }
+            }
+            cx.notify();
+        }
     }
 
     /// 更新面板的 bounds
@@ -759,6 +887,7 @@ impl Explorer {
                 entries,
                 loading,
                 error,
+                breadcrumb_state,
                 ..
             } => {
                 // 渲染叶子面板：标题栏 + 文件列表
@@ -767,22 +896,58 @@ impl Explorer {
                 let this_clone_list = this_entity.clone();
                 let this_clone_title = this_entity.clone();
 
+                // 解析路径为面包屑项
+                let breadcrumb_items = parse_path_to_breadcrumb_items(path);
+
                 let content = div()
                     .flex()
                     .flex_col()
                     .size_full()
                     .bg(theme.colors.background)
                     .child(
-                        // 标题栏
-                        PanelTitleBar::new(path.clone()).active(is_active).on_click(
-                            move |_, cx| {
-                                if let Some(this) = this_clone_title.upgrade() {
-                                    let _ = this.update(cx, |explorer, cx| {
-                                        explorer.set_active_panel(panel_id, cx);
-                                    });
-                                }
-                            },
-                        ),
+                        div().w_full().child(
+                            // 标题栏（面包屑导航）
+                            Breadcrumb::new()
+                                .items(breadcrumb_items)
+                                .active(is_active)
+                                .state(breadcrumb_state.clone())
+                                .on_navigate(move |clicked_path, window, cx| {
+                                    if let Some(this) = this_clone_title.upgrade() {
+                                        let _ = this.update(cx, |explorer, cx| {
+                                            // 先设置为激活面板
+                                            explorer.set_active_panel(panel_id, cx);
+                                            // 加载点击的路径
+                                            explorer.load_directory_for_panel(
+                                                panel_id,
+                                                clicked_path,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                })
+                                .suffix(
+                                    // 关闭按钮（后缀）
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .w(px(24.))
+                                        .h(px(24.))
+                                        .rounded(theme.radius.sm)
+                                        .cursor_pointer()
+                                        .hover(|style| {
+                                            style
+                                                .bg(theme.colors.destructive)
+                                                .text_color(theme.colors.destructive_foreground)
+                                        })
+                                        .child(IconName::Close)
+                                        .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                                            // TODO: 实现面板关闭逻辑
+                                            tracing::info!("关闭面板: {}", panel_id);
+                                        }),
+                                ),
+                        )
                     )
                     .child(
                         // 文件列表
@@ -1044,7 +1209,7 @@ fn main() {
                 titlebar: Some(TitleBar::titlebar_options()),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| Explorer::new()),
+            |_, cx| cx.new(Explorer::new),
         )
         .expect("failed to open window")
         .update(cx, |explorer, window, cx| {
