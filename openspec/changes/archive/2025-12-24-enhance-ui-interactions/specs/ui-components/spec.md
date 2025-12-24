@@ -72,8 +72,6 @@
 - **AND** 所有图标尺寸与文本对齐
 - **AND** 所有图标颜色使用主题的 muted_foreground
 
-## MODIFIED Requirements
-
 ### Requirement: 面包屑组件导出
 系统 MUST 从 explorer-component crate 导出面包屑组件。
 
@@ -88,6 +86,10 @@
 - **THEN** 可以使用 `use explorer_component::{Breadcrumb, BreadcrumbItem};`
 - **AND** 可以创建和渲染 Breadcrumb 实例
 - **AND** 编译通过无错误
+
+## MODIFIED Requirements
+
+（本变更中无修改的需求）
 
 ## REMOVED Requirements
 
