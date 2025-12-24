@@ -4,7 +4,8 @@ use gpui::{prelude::*, *};
 
 use crate::Theme;
 
-const HANDLE_SIZE: Pixels = px(2.);
+const HANDLE_SIZE: Pixels = px(2.);  // 分割线视觉宽度
+const HANDLE_HIT_AREA: Pixels = px(8.);  // 拖拽识别区域宽度
 
 /// 可调整大小组件的状态管理
 pub struct ResizableState {
@@ -146,7 +147,7 @@ impl RenderOnce for Resizable {
 
         let theme = cx.global::<Theme>();
         let axis = self.axis;
-        let resizable_id = self.id.clone();  // 保存 ID 用于生成唯一的手柄 ID
+        let resizable_id = self.id.clone(); // 保存 ID 用于生成唯一的手柄 ID
 
         let container_state = state.clone();
 
@@ -154,13 +155,16 @@ impl RenderOnce for Resizable {
         let content = div()
             .relative()
             .size_full()
+            // 拖拽时在整个容器上显示拖拽光标
+            .when(is_resizing, |this| {
+                match axis {
+                    Axis::Horizontal => this.cursor_col_resize(),
+                    Axis::Vertical => this.cursor_row_resize(),
+                }
+            })
             // 第一个面板（横向时在左侧，纵向时在顶部）
             .child({
-                let panel = div()
-                    .absolute()
-                    .flex()
-                    .flex_col()
-                    .child(self.first);
+                let panel = div().absolute().flex().flex_col().child(self.first);
 
                 // 根据方向设置位置和尺寸
                 match axis {
@@ -176,11 +180,7 @@ impl RenderOnce for Resizable {
             })
             // 第二个面板（横向时在右侧，纵向时在底部）
             .child({
-                let panel = div()
-                    .absolute()
-                    .flex()
-                    .flex_col()
-                    .child(self.second);
+                let panel = div().absolute().flex().flex_col().child(self.second);
 
                 // 根据方向设置位置和尺寸
                 match axis {
@@ -196,39 +196,59 @@ impl RenderOnce for Resizable {
             })
             // 拖拽手柄（独立元素，放在最上层）
             .child({
+                let border_color = if is_resizing {
+                    theme.colors.brand
+                } else {
+                    theme.colors.border
+                };
+
                 let handle = match axis {
-                    Axis::Horizontal => div()
-                        .id(ElementId::Name(
-                            format!("{}-resize-handle", resizable_id.clone()).into(),
-                        ))
-                        .absolute()
-                        .left(first_size - HANDLE_SIZE / 2.0)
-                        .top_0()
-                        .h_full()
-                        .w(HANDLE_SIZE)
-                        .cursor_col_resize()
-                        .bg(if is_resizing {
-                            theme.colors.accent
-                        } else {
-                            theme.colors.border
-                        })
-                        .hover(|style| style.bg(theme.colors.accent)),
-                    Axis::Vertical => div()
-                        .id(ElementId::Name(
-                            format!("{}-resize-handle", resizable_id.clone()).into(),
-                        ))
-                        .absolute()
-                        .top(first_size - HANDLE_SIZE / 2.0)
-                        .left_0()
-                        .w_full()
-                        .h(HANDLE_SIZE)
-                        .cursor_row_resize()
-                        .bg(if is_resizing {
-                            theme.colors.accent
-                        } else {
-                            theme.colors.border
-                        })
-                        .hover(|style| style.bg(theme.colors.accent)),
+                    Axis::Horizontal => {
+                        // 横向拖拽：4px 宽的击中区域，中间显示 2px 的分割线
+                        div()
+                            .id(ElementId::Name(
+                                format!("{}-resize-handle", resizable_id.clone()).into(),
+                            ))
+                            .absolute()
+                            .left(first_size - HANDLE_HIT_AREA / 2.0)
+                            .top_0()
+                            .h_full()
+                            .w(HANDLE_HIT_AREA)
+                            .cursor_col_resize()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            // 中间显示 2px 的分割线
+                            .child(
+                                div()
+                                    .w(HANDLE_SIZE)
+                                    .h_full()
+                                    .bg(border_color)
+                            )
+                    },
+                    Axis::Vertical => {
+                        // 纵向拖拽：4px 高的击中区域，中间显示 2px 的分割线
+                        div()
+                            .id(ElementId::Name(
+                                format!("{}-resize-handle", resizable_id.clone()).into(),
+                            ))
+                            .absolute()
+                            .top(first_size - HANDLE_HIT_AREA / 2.0)
+                            .left_0()
+                            .w_full()
+                            .h(HANDLE_HIT_AREA)
+                            .cursor_row_resize()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            // 中间显示 2px 的分割线
+                            .child(
+                                div()
+                                    .h(HANDLE_SIZE)
+                                    .w_full()
+                                    .bg(border_color)
+                            )
+                    },
                 };
 
                 handle.on_mouse_down(MouseButton::Left, {
@@ -237,6 +257,18 @@ impl RenderOnce for Resizable {
                         state.update(cx, |s, cx| s.start_resizing(cx));
                     }
                 })
+            })
+            // 拖拽时的全局光标覆盖层
+            .when(is_resizing, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .cursor(match axis {
+                            Axis::Horizontal => CursorStyle::ResizeColumn,
+                            Axis::Vertical => CursorStyle::ResizeRow,
+                        })
+                )
             })
             // 全局鼠标移动事件处理
             .child(ResizableMouseHandler {

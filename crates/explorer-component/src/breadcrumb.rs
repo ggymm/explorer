@@ -5,8 +5,7 @@ use gpui::{prelude::*, *};
 use crate::{IconName, Theme};
 
 /// 面包屑状态
-pub struct BreadcrumbState {
-}
+pub struct BreadcrumbState {}
 
 impl BreadcrumbState {
     pub fn new() -> Self {
@@ -115,22 +114,10 @@ impl RenderOnce for Breadcrumb {
         let theme = cx.global::<Theme>();
 
         // 根据激活状态选择颜色
-        let bg_color = if self.is_active {
-            theme.colors.accent
-        } else {
-            theme.colors.background
-        };
-
         let border_color = if self.is_active {
-            theme.colors.accent
+            theme.colors.breadcrumb_border_active
         } else {
-            theme.colors.border
-        };
-
-        let text_color = if self.is_active {
-            theme.colors.accent_foreground
-        } else {
-            theme.colors.muted_foreground
+            theme.colors.breadcrumb_border
         };
 
         // 构建面包屑链
@@ -146,16 +133,14 @@ impl RenderOnce for Breadcrumb {
                 .py(theme.spacing.xs)
                 .rounded(theme.radius.sm)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.colors.muted))
+                .text_sm() // 使用小字号
+                .hover(|style| style.bg(theme.colors.breadcrumb_item_background_hover))
                 .when(is_last, |this| {
-                    this.font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if self.is_active {
-                            theme.colors.accent_foreground
-                        } else {
-                            theme.colors.foreground
-                        })
+                    this.text_color(theme.colors.breadcrumb_foreground_active)
                 })
-                .when(!is_last, |this| this.text_color(text_color))
+                .when(!is_last, |this| {
+                    this.text_color(theme.colors.breadcrumb_foreground)
+                })
                 // 单个元素文本溢出省略
                 .max_w(px(200.))
                 .overflow_hidden()
@@ -163,7 +148,7 @@ impl RenderOnce for Breadcrumb {
                     div()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .child(item.label.clone())
+                        .child(item.label.clone()),
                 )
                 .when_some(self.on_navigate.clone(), move |this, callback| {
                     let value = item_clone.value.clone();
@@ -179,6 +164,7 @@ impl RenderOnce for Breadcrumb {
                 breadcrumb_elements.push(
                     div()
                         .mx(theme.spacing.xs)
+                        .text_sm() // 使用小字号
                         .child(IconName::ChevronRight)
                         .text_color(theme.colors.muted_foreground)
                         .into_any_element(),
@@ -194,38 +180,23 @@ impl RenderOnce for Breadcrumb {
             .h(px(32.))
             .w_full()
             .px(theme.spacing.md)
-            .bg(bg_color)
+            .bg(theme.colors.breadcrumb_background)
             .border_b_1()
             .border_color(border_color)
             // 前缀（可选）
             .when_some(self.prefix, |this: gpui::Div, prefix| {
-                this.child(
-                    div()
-                        .flex_shrink_0()
-                        .mr(theme.spacing.sm)
-                        .child(prefix),
-                )
+                this.child(div().flex_shrink_0().mr(theme.spacing.sm).child(prefix))
             })
             // 中间：面包屑链
             .child(
                 div()
                     .flex_1()
                     .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .children(breadcrumb_elements),
-                    )
+                    .child(div().flex().items_center().children(breadcrumb_elements)),
             )
             // 后缀（可选）
             .when_some(self.suffix, |this: gpui::Div, suffix| {
-                this.child(
-                    div()
-                        .flex_shrink_0()
-                        .ml(theme.spacing.sm)
-                        .child(suffix),
-                )
+                this.child(div().flex_shrink_0().ml(theme.spacing.sm).child(suffix))
             })
     }
 }

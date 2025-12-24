@@ -1,10 +1,4 @@
-use std::{
-    collections::HashSet,
-    fs::create_dir_all,
-    io::stdout,
-    mem::forget,
-    sync::Arc,
-};
+use std::{collections::HashSet, fs::create_dir_all, io::stdout, mem::forget, sync::Arc};
 
 use dirs::home_dir;
 use gpui::{prelude::*, *};
@@ -84,7 +78,7 @@ pub enum PanelNode {
         entries: Vec<FileItem>,
         loading: bool,
         error: Option<String>,
-        bounds: Bounds<Pixels>, // 保存面板尺寸
+        bounds: Bounds<Pixels>,                    // 保存面板尺寸
         breadcrumb_state: Entity<BreadcrumbState>, // 面包屑状态
     },
     /// 分支节点：包含两个子面板和拆分方向
@@ -191,7 +185,15 @@ impl PanelNode {
                     new_path.clone(),
                     initial_size,
                     cx,
-                ) || second.split_panel(target_id, axis, split_id, new_leaf_id, new_path, initial_size, cx)
+                ) || second.split_panel(
+                    target_id,
+                    axis,
+                    split_id,
+                    new_leaf_id,
+                    new_path,
+                    initial_size,
+                    cx,
+                )
             }
             _ => false,
         }
@@ -266,6 +268,70 @@ impl PanelNode {
                     || second.update_panel_bounds(target_id, new_bounds)
             }
             _ => false,
+        }
+    }
+
+    /// 移除指定 ID 的面板
+    /// 返回新的树结构（如果目标被移除则提升兄弟节点）
+    pub fn remove_panel(self, target_id: PanelId) -> Option<PanelNode> {
+        match self {
+            PanelNode::Leaf { id, .. } => {
+                // 叶子节点：如果是目标节点，返回 None 表示移除
+                if id == target_id { None } else { Some(self) }
+            }
+            PanelNode::Split {
+                first,
+                second,
+                id,
+                axis,
+                state,
+                bounds,
+            } => {
+                // 尝试从子节点中移除
+                let first_result = first.remove_panel(target_id);
+                let second_result = second.remove_panel(target_id);
+
+                match (first_result, second_result) {
+                    (None, Some(node)) => Some(node), // 第一个子节点被移除，提升第二个
+                    (Some(node), None) => Some(node), // 第二个子节点被移除，提升第一个
+                    (Some(f), Some(s)) => {
+                        // 两个子节点都保留，重建 Split
+                        Some(PanelNode::Split {
+                            id,
+                            axis,
+                            first: Box::new(f),
+                            second: Box::new(s),
+                            state,
+                            bounds,
+                        })
+                    }
+                    (None, None) => None, // 两个都被移除（不应该发生）
+                }
+            }
+        }
+    }
+
+    /// 查找下一个激活面板 ID（深度优先）
+    pub fn find_next_panel_id(&self, exclude_id: PanelId) -> Option<PanelId> {
+        match self {
+            PanelNode::Leaf { id, .. } => {
+                if *id != exclude_id {
+                    Some(*id)
+                } else {
+                    None
+                }
+            }
+            PanelNode::Split { first, second, .. } => first
+                .find_next_panel_id(exclude_id)
+                .or_else(|| second.find_next_panel_id(exclude_id)),
+        }
+    }
+
+    /// 统计叶子面板数量
+    pub fn count_leaves(&self) -> usize {
+        match self {
+            PanelNode::Leaf { .. } => 1,
+            PanelNode::Split { first, second, .. } => first.count_leaves() + second.count_leaves(),
         }
     }
 }
@@ -509,12 +575,13 @@ impl Explorer {
     }
 
     /// 切换选中状态
-    pub fn toggle_selection(&mut self, path: String, cx: &mut Context<Self>) {
+    pub fn toggle_selection(&mut self, path: String, index: usize, cx: &mut Context<Self>) {
         if self.selected_items.contains(&path) {
             self.selected_items.remove(&path);
         } else {
             self.selected_items.insert(path);
         }
+        self.last_selected_index = Some(index);
         cx.notify();
     }
 
@@ -527,12 +594,7 @@ impl Explorer {
     }
 
     /// 范围选择（Shift + 点击）
-    pub fn select_range(
-        &mut self,
-        paths: &[String],
-        current_index: usize,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn select_range(&mut self, paths: &[String], current_index: usize, cx: &mut Context<Self>) {
         if let Some(last_index) = self.last_selected_index {
             let start = last_index.min(current_index);
             let end = last_index.max(current_index);
@@ -541,8 +603,14 @@ impl Explorer {
                     self.selected_items.insert(path.clone());
                 }
             }
-            cx.notify();
+        } else {
+            // 没有上次选中项，则单选当前项
+            if let Some(path) = paths.get(current_index) {
+                self.set_single_selection(path.clone(), current_index, cx);
+                return;
+            }
         }
+        cx.notify();
     }
 
     /// 更新面板的 bounds
@@ -559,6 +627,10 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         tracing::info!("为面板 {} 加载目录: {}", panel_id, path);
+
+        // 切换目录时清除文件列表的选中状态
+        self.selected_items.clear();
+        self.last_selected_index = None;
 
         // 更新面板状态为加载中
         self.panel_tree
@@ -577,7 +649,27 @@ impl Explorer {
             // 更新 UI
             let _ = cx.update(|_, cx| {
                 let _ = this.update(cx, |explorer, cx| match ret {
-                    Ok(entries) => {
+                    Ok(mut entries) => {
+                        // 排序：非隐藏文件在前，然后按目录/文件分类，最后按名称排序
+                        entries.sort_by(|a, b| {
+                            // 首先按是否隐藏排序
+                            match (a.is_hidden, b.is_hidden) {
+                                (false, true) => std::cmp::Ordering::Less,
+                                (true, false) => std::cmp::Ordering::Greater,
+                                _ => {
+                                    // 然后按类型排序（目录在前）
+                                    match (&a.item_type, &b.item_type) {
+                                        (ItemType::Directory, ItemType::File) => std::cmp::Ordering::Less,
+                                        (ItemType::File, ItemType::Directory) => std::cmp::Ordering::Greater,
+                                        _ => {
+                                            // 最后按名称排序（不区分大小写）
+                                            a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
                         tracing::info!("面板 {} 成功加载 {} 个条目", panel_id, entries.len());
                         explorer.panel_tree.update_panel_data(
                             panel_id,
@@ -645,7 +737,27 @@ impl Explorer {
             // 更新 UI
             let _ = cx.update(|_, cx| {
                 let _ = this.update(cx, |explorer, cx| match ret {
-                    Ok((roots, entries)) => {
+                    Ok((roots, mut entries)) => {
+                        // 排序：非隐藏文件在前，然后按目录/文件分类，最后按名称排序
+                        entries.sort_by(|a, b| {
+                            // 首先按是否隐藏排序
+                            match (a.is_hidden, b.is_hidden) {
+                                (false, true) => std::cmp::Ordering::Less,
+                                (true, false) => std::cmp::Ordering::Greater,
+                                _ => {
+                                    // 然后按类型排序（目录在前）
+                                    match (&a.item_type, &b.item_type) {
+                                        (ItemType::Directory, ItemType::File) => std::cmp::Ordering::Less,
+                                        (ItemType::File, ItemType::Directory) => std::cmp::Ordering::Greater,
+                                        _ => {
+                                            // 最后按名称排序（不区分大小写）
+                                            a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
                         explorer.roots = roots;
                         // 更新初始面板的数据
                         explorer.panel_tree.update_panel_data(
@@ -679,6 +791,50 @@ impl Explorer {
     pub fn load_directory(&mut self, path: String, window: &Window, cx: &mut Context<Self>) {
         if let Some(active_id) = self.active_panel_id {
             self.load_directory_for_panel(active_id, path, window, cx);
+        }
+    }
+
+    /// 关闭指定面板
+    pub fn close_panel(&mut self, panel_id: PanelId, cx: &mut Context<Self>) {
+        // 检查是否是最后一个面板
+        if self.panel_tree.count_leaves() <= 1 {
+            tracing::warn!("无法关闭最后一个面板");
+            return;
+        }
+
+        // 如果关闭的是激活面板，需要找到新的激活面板
+        let need_new_active = self.active_panel_id == Some(panel_id);
+        let new_active_id = if need_new_active {
+            self.panel_tree.find_next_panel_id(panel_id)
+        } else {
+            None
+        };
+
+        // 移除面板
+        let old_tree = std::mem::replace(
+            &mut self.panel_tree,
+            PanelNode::new_leaf(9999, "/".to_string(), cx), // 临时占位
+        );
+
+        if let Some(new_tree) = old_tree.clone().remove_panel(panel_id) {
+            self.panel_tree = new_tree;
+
+            // 更新激活面板
+            if need_new_active {
+                if let Some(new_id) = new_active_id {
+                    self.active_panel_id = Some(new_id);
+                } else {
+                    // 没找到新的激活面板，使用树中的第一个
+                    self.active_panel_id = self.panel_tree.find_next_panel_id(panel_id);
+                }
+            }
+
+            tracing::info!("成功关闭面板: {}", panel_id);
+            cx.notify();
+        } else {
+            // 移除失败，恢复原树
+            self.panel_tree = old_tree;
+            tracing::error!("关闭面板失败: {}", panel_id);
         }
     }
 }
@@ -842,7 +998,7 @@ impl Explorer {
                                             .items_center()
                                             .gap(theme.spacing.sm)
                                             .child(icon.text_color(if is_selected {
-                                                theme.colors.accent_foreground
+                                                theme.colors.brand_foreground
                                             } else {
                                                 theme.colors.foreground
                                             }))
@@ -850,7 +1006,7 @@ impl Explorer {
                                                 div()
                                                     .text_sm()
                                                     .text_color(if is_selected {
-                                                        theme.colors.accent_foreground
+                                                        theme.colors.brand_foreground
                                                     } else {
                                                         theme.colors.foreground
                                                     })
@@ -938,16 +1094,23 @@ impl Explorer {
                                         .cursor_pointer()
                                         .hover(|style| {
                                             style
-                                                .bg(theme.colors.destructive)
-                                                .text_color(theme.colors.destructive_foreground)
+                                                .bg(theme.colors.danger)
+                                                .text_color(theme.colors.danger_foreground)
                                         })
                                         .child(IconName::Close)
-                                        .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                                            // TODO: 实现面板关闭逻辑
-                                            tracing::info!("关闭面板: {}", panel_id);
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let this_clone_close = this_entity.clone();
+                                            move |_, _, cx| {
+                                                tracing::info!("关闭面板: {}", panel_id);
+                                                if let Some(this) = this_clone_close.upgrade() {
+                                                    let _ = this.update(cx, |explorer, cx| {
+                                                        explorer.close_panel(panel_id, cx);
+                                                    });
+                                                }
+                                            }
                                         }),
                                 ),
-                        )
+                        ),
                     )
                     .child(
                         // 文件列表
@@ -972,6 +1135,8 @@ impl Explorer {
                                     .loading_text("加载中...")
                                     .render_item({
                                         let this_entity_clone = this_entity.clone();
+                                        let entries_clone = entries.clone();
+                                        let selected_items = self.selected_items.clone();
                                         move |entry, theme| {
                                             let icon = match entry.item_type {
                                                 ItemType::Directory => {
@@ -989,27 +1154,87 @@ impl Explorer {
 
                                             let entry_path = entry.path.clone();
                                             let entry_type = entry.item_type;
-                                            let this_clone = this_entity_clone.clone();
+                                            let this_clone_double = this_entity_clone.clone();
+                                            let this_clone_click = this_entity_clone.clone();
 
-                                            let mut item = ListItem::new(entry.path.clone()).child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(theme.spacing.sm)
-                                                    .child(icon.text_color(theme.colors.foreground))
+                                            // 查找当前项的索引
+                                            let entry_index = entries_clone
+                                                .iter()
+                                                .position(|e| e.path == entry.path)
+                                                .unwrap_or(0);
+
+                                            // 检查是否被选中
+                                            let is_selected = selected_items.contains(&entry.path);
+
+                                            let mut item =
+                                                ListItem::new(entry.path.clone())
+                                                    .selected(is_selected)
                                                     .child(
                                                         div()
-                                                            .text_sm()
-                                                            .text_color(name_color)
-                                                            .child(entry.name.clone()),
-                                                    ),
-                                            );
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(theme.spacing.sm)
+                                                            .child(icon.text_color(
+                                                                theme.colors.foreground,
+                                                            ))
+                                                            .child(
+                                                                div()
+                                                                    .text_sm()
+                                                                    .text_color(name_color)
+                                                                    .child(entry.name.clone()),
+                                                            ),
+                                                    );
 
-                                            // 只为目录添加双击事件
+                                            // 所有类型都添加单击事件（选中）
+                                            let entry_path_click = entry.path.clone();
+                                            let entries_for_click = entries_clone.clone();
+                                            item = item.on_click(move |event, cx| {
+                                                if let Some(this) = this_clone_click.upgrade() {
+                                                    let _ = this.update(cx, |explorer, cx| {
+                                                        explorer.set_active_panel(panel_id, cx);
+
+                                                        // 检测修饰键
+                                                        let modifiers = event.modifiers();
+
+                                                        if modifiers.shift {
+                                                            // Shift + 点击：范围选择
+                                                            let paths: Vec<String> =
+                                                                entries_for_click
+                                                                    .iter()
+                                                                    .map(|e| e.path.clone())
+                                                                    .collect();
+                                                            explorer.select_range(
+                                                                &paths,
+                                                                entry_index,
+                                                                cx,
+                                                            );
+                                                        } else if modifiers.platform
+                                                            || modifiers.control
+                                                        {
+                                                            // Ctrl/Cmd + 点击：切换选中（platform 在 macOS 上是 Cmd）
+                                                            explorer.toggle_selection(
+                                                                entry_path_click.clone(),
+                                                                entry_index,
+                                                                cx,
+                                                            );
+                                                        } else {
+                                                            // 普通点击：单选
+                                                            explorer.set_single_selection(
+                                                                entry_path_click.clone(),
+                                                                entry_index,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    });
+                                                }
+                                            });
+
+                                            // 为目录额外添加双击事件（进入目录）
                                             if entry_type == ItemType::Directory {
                                                 item = item.on_double_click(move |window, cx| {
                                                     tracing::info!("双击文件夹: {}", entry_path);
-                                                    if let Some(this) = this_clone.upgrade() {
+                                                    if let Some(this) = this_clone_double.upgrade()
+                                                    {
                                                         let path = entry_path.clone();
                                                         let _ = this.update(cx, |explorer, cx| {
                                                             explorer.set_active_panel(panel_id, cx);
@@ -1048,14 +1273,10 @@ impl Explorer {
                 let first_panel = self.render_panel_node(first, theme, this_entity);
                 let second_panel = self.render_panel_node(second, theme, this_entity);
 
-                Resizable::new(
-                    format!("split-{}", panel_id),
-                    first_panel,
-                    second_panel,
-                )
-                .axis(*axis)
-                .with_state(state.clone())
-                .into_any_element()
+                Resizable::new(format!("split-{}", panel_id), first_panel, second_panel)
+                    .axis(*axis)
+                    .with_state(state.clone())
+                    .into_any_element()
             }
         }
     }
@@ -1094,7 +1315,9 @@ impl Element for PanelContainer {
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        Some(ElementId::Name(format!("panel-container-{}", self.panel_id).into()))
+        Some(ElementId::Name(
+            format!("panel-container-{}", self.panel_id).into(),
+        ))
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {

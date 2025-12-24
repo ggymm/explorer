@@ -118,7 +118,7 @@ impl<T: Clone + 'static> RenderOnce for GroupedList<T> {
                     div().flex().items_center().justify_center().h_full().child(
                         div()
                             .text_sm()
-                            .text_color(theme.colors.destructive)
+                            .text_color(theme.colors.danger)
                             .child(error_msg),
                     ),
                 )

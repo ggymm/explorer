@@ -4,16 +4,16 @@ use anyhow::anyhow;
 use gpui::{AssetSource, SharedString};
 use rust_embed::RustEmbed;
 
+mod breadcrumb;
 mod icon;
 mod list;
-mod breadcrumb;
 mod resizable;
 mod theme;
 mod title_bar;
 
+pub use breadcrumb::*;
 pub use icon::*;
 pub use list::*;
-pub use breadcrumb::*;
 pub use resizable::*;
 pub use theme::*;
 pub use title_bar::*;

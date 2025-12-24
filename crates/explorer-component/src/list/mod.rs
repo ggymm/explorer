@@ -105,7 +105,7 @@ impl<T: Clone + 'static> RenderOnce for List<T> {
                     div().flex().items_center().justify_center().h_full().child(
                         div()
                             .text_sm()
-                            .text_color(theme.colors.destructive)
+                            .text_color(theme.colors.danger)
                             .child(error_msg),
                     ),
                 )
@@ -201,8 +201,23 @@ impl ListItem {
 impl RenderOnce for ListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.global::<Theme>();
+        let is_selected = self.selected;
 
-        let mut element = div()
+        // 根据选中状态选择对应的颜色
+        let bg_color = if is_selected {
+            theme.colors.list_item_background_selected
+        } else {
+            theme.colors.list_item_background
+        };
+
+        let bg_hover_color = if is_selected {
+            theme.colors.list_item_background_selected_hover
+        } else {
+            theme.colors.list_item_background_hover
+        };
+
+        // 构建容器：Fluent UI 风格的列表项（仅背景色高亮）
+        let container = div()
             .id(self.id)
             .flex()
             .items_center()
@@ -210,28 +225,31 @@ impl RenderOnce for ListItem {
             .p(theme.spacing.sm)
             .rounded(theme.radius.md)
             .cursor_pointer()
-            .when(self.selected, |this| this.bg(theme.colors.accent))
-            .when(!self.selected, |this| {
-                this.hover(|style| style.bg(theme.colors.muted))
-            })
-            .child(self.content);
+            .bg(bg_color)
+            .hover(move |style| style.bg(bg_hover_color))
+            .child(self.content)
+            // 事件处理：统一处理单击和双击
+            .when_some(
+                self.on_click.as_ref().or(self.on_double_click.as_ref()),
+                |this, _| {
+                    let click = self.on_click.clone();
+                    let double_click = self.on_double_click.clone();
+                    this.on_click(move |event, window, cx| match event.click_count() {
+                        2 => {
+                            if let Some(handler) = double_click.as_ref() {
+                                handler(window, cx);
+                            }
+                        }
+                        1 => {
+                            if let Some(handler) = click.as_ref() {
+                                handler(window, cx);
+                            }
+                        }
+                        _ => {}
+                    })
+                },
+            );
 
-        if let Some(click_handler) = self.on_click {
-            // on_click
-            element = element.on_click(move |event, window, cx| {
-                if event.click_count() == 1 {
-                    click_handler(window, cx);
-                }
-            });
-        } else if let Some(double_click_handler) = self.on_double_click {
-            // on_double_click
-            element = element.on_click(move |event, window, cx| {
-                if event.click_count() == 2 {
-                    double_click_handler(window, cx);
-                }
-            });
-        }
-
-        element
+        container
     }
 }
