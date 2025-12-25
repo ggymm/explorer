@@ -1,6 +1,8 @@
 mod grouped;
+mod virtual_list;
 
 pub use grouped::*;
+pub use virtual_list::*;
 
 use std::rc::Rc;
 
@@ -219,10 +221,11 @@ impl RenderOnce for ListItem {
         // 构建容器：Fluent UI 风格的列表项（仅背景色高亮）
         let container = div()
             .id(self.id)
+            .w_full()
             .flex()
             .items_center()
             .gap(theme.spacing.sm)
-            .p(theme.spacing.sm)
+            .p_2()
             .rounded(theme.radius.md)
             .cursor_pointer()
             .bg(bg_color)

@@ -1629,6 +1629,7 @@ dependencies = [
  "gpui",
  "rust-embed",
  "serde",
+ "smallvec",
 ]
 
 [[package]]

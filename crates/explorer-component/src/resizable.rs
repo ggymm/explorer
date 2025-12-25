@@ -4,8 +4,8 @@ use gpui::{prelude::*, *};
 
 use crate::Theme;
 
-const HANDLE_SIZE: Pixels = px(2.);  // 分割线视觉宽度
-const HANDLE_HIT_AREA: Pixels = px(8.);  // 拖拽识别区域宽度
+const HANDLE_SIZE: Pixels = px(2.); // 分割线视觉宽度
+const HANDLE_HIT_AREA: Pixels = px(8.); // 拖拽识别区域宽度
 
 /// 可调整大小组件的状态管理
 pub struct ResizableState {
@@ -156,11 +156,9 @@ impl RenderOnce for Resizable {
             .relative()
             .size_full()
             // 拖拽时在整个容器上显示拖拽光标
-            .when(is_resizing, |this| {
-                match axis {
-                    Axis::Horizontal => this.cursor_col_resize(),
-                    Axis::Vertical => this.cursor_row_resize(),
-                }
+            .when(is_resizing, |this| match axis {
+                Axis::Horizontal => this.cursor_col_resize(),
+                Axis::Vertical => this.cursor_row_resize(),
             })
             // 第一个面板（横向时在左侧，纵向时在顶部）
             .child({
@@ -219,13 +217,8 @@ impl RenderOnce for Resizable {
                             .items_center()
                             .justify_center()
                             // 中间显示 2px 的分割线
-                            .child(
-                                div()
-                                    .w(HANDLE_SIZE)
-                                    .h_full()
-                                    .bg(border_color)
-                            )
-                    },
+                            .child(div().w(HANDLE_SIZE).h_full().bg(border_color))
+                    }
                     Axis::Vertical => {
                         // 纵向拖拽：4px 高的击中区域，中间显示 2px 的分割线
                         div()
@@ -242,13 +235,8 @@ impl RenderOnce for Resizable {
                             .items_center()
                             .justify_center()
                             // 中间显示 2px 的分割线
-                            .child(
-                                div()
-                                    .h(HANDLE_SIZE)
-                                    .w_full()
-                                    .bg(border_color)
-                            )
-                    },
+                            .child(div().h(HANDLE_SIZE).w_full().bg(border_color))
+                    }
                 };
 
                 handle.on_mouse_down(MouseButton::Left, {
@@ -260,15 +248,10 @@ impl RenderOnce for Resizable {
             })
             // 拖拽时的全局光标覆盖层
             .when(is_resizing, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .cursor(match axis {
-                            Axis::Horizontal => CursorStyle::ResizeColumn,
-                            Axis::Vertical => CursorStyle::ResizeRow,
-                        })
-                )
+                this.child(div().absolute().inset_0().cursor(match axis {
+                    Axis::Horizontal => CursorStyle::ResizeColumn,
+                    Axis::Vertical => CursorStyle::ResizeRow,
+                }))
             })
             // 全局鼠标移动事件处理
             .child(ResizableMouseHandler {

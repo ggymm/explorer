@@ -1,4 +1,7 @@
-use std::{collections::HashSet, fs::create_dir_all, io::stdout, mem::forget, sync::Arc};
+use std::{
+    cmp::Ordering, collections::HashSet, fs::create_dir_all, io::stdout, mem::forget,
+    panic::Location, rc::Rc, sync::Arc,
+};
 
 use dirs::home_dir;
 use gpui::{prelude::*, *};
@@ -10,8 +13,8 @@ use tracing_subscriber::{EnvFilter, fmt::layer, prelude::*};
 
 use explorer_common::*;
 use explorer_component::{
-    Assets, Breadcrumb, BreadcrumbItem, BreadcrumbState, GroupedList, Icon, IconName, List,
-    ListGroup, ListItem, Resizable, ResizableState, Theme, TitleBar,
+    Assets, Breadcrumb, BreadcrumbItem, BreadcrumbState, GroupedList, Icon, IconName, ListGroup,
+    ListItem, Resizable, ResizableState, Theme, TitleBar, VirtualList, VirtualListScrollHandle,
 };
 use explorer_local_provider::LocalFileSystemProvider;
 use explorer_storage::*;
@@ -22,7 +25,7 @@ mod quick_access;
 
 /// 将路径字符串解析为面包屑项
 fn parse_path_to_breadcrumb_items(path: &str) -> Vec<BreadcrumbItem> {
-    let mut items = Vec::new();
+    let mut items = vec![];
 
     // 处理 Windows 路径
     #[cfg(target_os = "windows")]
@@ -80,6 +83,7 @@ pub enum PanelNode {
         error: Option<String>,
         bounds: Bounds<Pixels>,                    // 保存面板尺寸
         breadcrumb_state: Entity<BreadcrumbState>, // 面包屑状态
+        scroll_handle: VirtualListScrollHandle,    // 虚拟列表滚动句柄
     },
     /// 分支节点：包含两个子面板和拆分方向
     Split {
@@ -96,14 +100,16 @@ impl PanelNode {
     /// 创建新的叶子面板
     pub fn new_leaf(id: PanelId, path: String, cx: &mut App) -> Self {
         let breadcrumb_state = cx.new(|_| BreadcrumbState::new());
+        let scroll_handle = VirtualListScrollHandle::new();
         Self::Leaf {
             id,
             path,
-            entries: Vec::new(),
+            entries: vec![],
             loading: true,
             error: None,
             bounds: Bounds::default(),
             breadcrumb_state,
+            scroll_handle,
         }
     }
 
@@ -135,6 +141,7 @@ impl PanelNode {
                 error,
                 bounds,
                 breadcrumb_state,
+                scroll_handle,
             } if *id == target_id => {
                 // 找到目标面板，执行拆分
                 let old_path = path.clone();
@@ -145,6 +152,7 @@ impl PanelNode {
                 let old_error = error.clone();
                 let old_bounds = *bounds;
                 let old_breadcrumb_state = breadcrumb_state.clone();
+                let old_scroll_handle = scroll_handle.clone();
 
                 // 创建两个新的叶子节点：第一个保留原数据，第二个创建新面板
                 let first = Box::new(PanelNode::Leaf {
@@ -155,6 +163,7 @@ impl PanelNode {
                     error: old_error,
                     bounds: Bounds::default(),
                     breadcrumb_state: old_breadcrumb_state,
+                    scroll_handle: old_scroll_handle,
                 });
                 let second = Box::new(PanelNode::new_leaf(new_leaf_id, new_path, cx));
 
@@ -402,7 +411,7 @@ impl Explorer {
 
         Self {
             provider,
-            roots: Vec::new(),
+            roots: vec![],
             selected_sidebar_path: Some(default_path),
             panel_tree,
             active_panel_id: Some(initial_panel_id),
@@ -634,7 +643,7 @@ impl Explorer {
 
         // 更新面板状态为加载中
         self.panel_tree
-            .update_panel_data(panel_id, path.clone(), Vec::new(), true, None);
+            .update_panel_data(panel_id, path.clone(), vec![], true, None);
         cx.notify();
 
         let provider = self.provider.clone();
@@ -654,13 +663,13 @@ impl Explorer {
                         entries.sort_by(|a, b| {
                             // 首先按是否隐藏排序
                             match (a.is_hidden, b.is_hidden) {
-                                (false, true) => std::cmp::Ordering::Less,
-                                (true, false) => std::cmp::Ordering::Greater,
+                                (false, true) => Ordering::Less,
+                                (true, false) => Ordering::Greater,
                                 _ => {
                                     // 然后按类型排序（目录在前）
                                     match (&a.item_type, &b.item_type) {
-                                        (ItemType::Directory, ItemType::File) => std::cmp::Ordering::Less,
-                                        (ItemType::File, ItemType::Directory) => std::cmp::Ordering::Greater,
+                                        (ItemType::Directory, ItemType::File) => Ordering::Less,
+                                        (ItemType::File, ItemType::Directory) => Ordering::Greater,
                                         _ => {
                                             // 最后按名称排序（不区分大小写）
                                             a.name.to_lowercase().cmp(&b.name.to_lowercase())
@@ -685,7 +694,7 @@ impl Explorer {
                         explorer.panel_tree.update_panel_data(
                             panel_id,
                             path_clone,
-                            Vec::new(),
+                            vec![],
                             false,
                             Some(format!("加载失败: {}", e)),
                         );
@@ -742,13 +751,13 @@ impl Explorer {
                         entries.sort_by(|a, b| {
                             // 首先按是否隐藏排序
                             match (a.is_hidden, b.is_hidden) {
-                                (false, true) => std::cmp::Ordering::Less,
-                                (true, false) => std::cmp::Ordering::Greater,
+                                (false, true) => Ordering::Less,
+                                (true, false) => Ordering::Greater,
                                 _ => {
                                     // 然后按类型排序（目录在前）
                                     match (&a.item_type, &b.item_type) {
-                                        (ItemType::Directory, ItemType::File) => std::cmp::Ordering::Less,
-                                        (ItemType::File, ItemType::Directory) => std::cmp::Ordering::Greater,
+                                        (ItemType::Directory, ItemType::File) => Ordering::Less,
+                                        (ItemType::File, ItemType::Directory) => Ordering::Greater,
                                         _ => {
                                             // 最后按名称排序（不区分大小写）
                                             a.name.to_lowercase().cmp(&b.name.to_lowercase())
@@ -775,7 +784,7 @@ impl Explorer {
                         explorer.panel_tree.update_panel_data(
                             initial_panel_id,
                             initial_path_clone,
-                            Vec::new(),
+                            vec![],
                             false,
                             Some(format!("加载失败: {}", e)),
                         );
@@ -876,21 +885,21 @@ impl Render for Explorer {
                         .items_center()
                         .justify_end()
                         .gap(theme.spacing.sm)
-                        .pr(theme.spacing.md)
+                        .pr_4()
                         .child(
                             // 横向拆分按钮
                             div()
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .size(px(28.))
+                                .size_7()
                                 .rounded(px(4.))
                                 .cursor_pointer()
                                 .hover(|style| style.bg(theme.colors.muted))
                                 .child(
                                     svg()
                                         .path("icons/columns-split.svg")
-                                        .size(px(16.))
+                                        .size_4()
                                         .text_color(theme.colors.foreground),
                                 )
                                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -907,14 +916,14 @@ impl Render for Explorer {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .size(px(28.))
+                                .size_7()
                                 .rounded(px(4.))
                                 .cursor_pointer()
                                 .hover(|style| style.bg(theme.colors.muted))
                                 .child(
                                     svg()
                                         .path("icons/rows-split.svg")
-                                        .size(px(16.))
+                                        .size_4()
                                         .text_color(theme.colors.foreground),
                                 )
                                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -945,7 +954,7 @@ impl Explorer {
         let selected_path = self.selected_sidebar_path.clone();
 
         // 构建分组数据
-        let mut groups = Vec::new();
+        let mut groups = vec![];
 
         // 快捷访问分组
         if !quick_access_items.is_empty() {
@@ -976,7 +985,7 @@ impl Explorer {
                     .flex_col()
                     .flex_1()
                     .overflow_scroll()
-                    .p(theme.spacing.md)
+                    .p_4()
                     .child(
                         GroupedList::new()
                             .groups(groups)
@@ -1044,6 +1053,7 @@ impl Explorer {
                 loading,
                 error,
                 breadcrumb_state,
+                scroll_handle,
                 ..
             } => {
                 // 渲染叶子面板：标题栏 + 文件列表
@@ -1088,8 +1098,7 @@ impl Explorer {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .w(px(24.))
-                                        .h(px(24.))
+                                        .size_6()
                                         .rounded(theme.radius.sm)
                                         .cursor_pointer()
                                         .hover(|style| {
@@ -1113,12 +1122,11 @@ impl Explorer {
                         ),
                     )
                     .child(
-                        // 文件列表
+                        // 文件列表（使用虚拟列表）
                         div()
                             .id(SharedString::from(format!("panel-{}", panel_id)))
                             .flex_1()
-                            .overflow_scroll()
-                            .p(theme.spacing.sm)
+                            .p_4()
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 if let Some(this) = this_clone_list.upgrade() {
                                     let _ = this.update(cx, |explorer, cx| {
@@ -1126,18 +1134,44 @@ impl Explorer {
                                     });
                                 }
                             })
-                            .child(
-                                List::new()
+                            .child({
+                                // 计算每个项目的高度
+                                // ListItem 的高度 = padding + 内容高度
+                                // 使用固定高度 36px
+                                let item_height = px(36.);
+                                // 加上项目间距
+                                let item_height_with_gap = px(40.);
+                                let item_sizes = Rc::new(
+                                    entries
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(idx, _)| gpui::Size {
+                                            width: px(0.),
+                                            height: if idx == entries.len() - 1 {
+                                                // 最后一项不加 gap
+                                                item_height
+                                            } else {
+                                                item_height_with_gap
+                                            },
+                                        })
+                                        .collect::<Vec<_>>(),
+                                );
+
+                                VirtualList::new(format!("file-list-{}", panel_id))
                                     .items(entries.clone())
+                                    .item_sizes(item_sizes)
+                                    .track_scroll(scroll_handle)
                                     .loading(*loading)
                                     .error(error.clone())
                                     .empty_text("目录为空")
                                     .loading_text("加载中...")
+                                    .w_full()
+                                    .gap(px(4.))
                                     .render_item({
                                         let this_entity_clone = this_entity.clone();
                                         let entries_clone = entries.clone();
                                         let selected_items = self.selected_items.clone();
-                                        move |entry, theme| {
+                                        move |entry, index, theme| {
                                             let icon = match entry.item_type {
                                                 ItemType::Directory => {
                                                     Icon::new(IconName::FolderClosed)
@@ -1157,11 +1191,8 @@ impl Explorer {
                                             let this_clone_double = this_entity_clone.clone();
                                             let this_clone_click = this_entity_clone.clone();
 
-                                            // 查找当前项的索引
-                                            let entry_index = entries_clone
-                                                .iter()
-                                                .position(|e| e.path == entry.path)
-                                                .unwrap_or(0);
+                                            // 使用传入的 index
+                                            let entry_index = index;
 
                                             // 检查是否被选中
                                             let is_selected = selected_items.contains(&entry.path);
@@ -1247,8 +1278,8 @@ impl Explorer {
 
                                             item.into_any_element()
                                         }
-                                    }),
-                            ),
+                                    })
+                            }),
                     )
                     .into_any_element();
 
@@ -1320,7 +1351,7 @@ impl Element for PanelContainer {
         ))
     }
 
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+    fn source_location(&self) -> Option<&'static Location<'static>> {
         None
     }
 

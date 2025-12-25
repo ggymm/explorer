@@ -10,3 +10,4 @@ gpui.workspace = true
 anyhow.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
+smallvec.workspace = true

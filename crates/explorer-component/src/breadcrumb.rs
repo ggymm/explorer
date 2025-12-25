@@ -129,8 +129,8 @@ impl RenderOnce for Breadcrumb {
 
             // 渲染面包屑项
             let item_element = div()
-                .px(theme.spacing.xs)
-                .py(theme.spacing.xs)
+                .px_2()
+                .py_1()
                 .rounded(theme.radius.sm)
                 .cursor_pointer()
                 .text_sm() // 使用小字号
@@ -177,12 +177,13 @@ impl RenderOnce for Breadcrumb {
             .flex()
             .flex_row()
             .items_center()
-            .h(px(32.))
+            .h_10()
             .w_full()
-            .px(theme.spacing.md)
+            .px_4()
             .bg(theme.colors.breadcrumb_background)
             .border_b_1()
             .border_color(border_color)
+            .overflow_hidden()
             // 前缀（可选）
             .when_some(self.prefix, |this: gpui::Div, prefix| {
                 this.child(div().flex_shrink_0().mr(theme.spacing.sm).child(prefix))
